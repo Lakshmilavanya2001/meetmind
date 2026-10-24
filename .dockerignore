@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+# Secrets anywhere in the tree (e.g. deploy/.env.production) never enter the build context.
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production.example
+deploy/livekit.prod.yaml
+uploads
+tests
+e2e
+test-results
+playwright-report
+infra/certs
+infra/livekit.yaml
+*.log

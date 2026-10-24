@@ -1,0 +1,16 @@
+# Local HTTPS front door: https://<host>:3443
+# - /rtc*  -> LiveKit signalling (WebSocket)
+# - else   -> Next.js app
+{
+	auto_https off
+	admin off
+}
+
+:3443 {
+	tls /certs/dev.crt /certs/dev.key
+
+	@livekit path /rtc /rtc/*
+	reverse_proxy @livekit 127.0.0.1:7880
+
+	reverse_proxy 127.0.0.1:3100
+}

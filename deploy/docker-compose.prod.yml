@@ -1,0 +1,88 @@
+# Production stack for a single Linux host with a public DNS name.
+#   cp deploy/.env.production.example deploy/.env.production   # fill in values
+#   cp deploy/livekit.prod.example.yaml deploy/livekit.prod.yaml # set keys, domain, TURN
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d --build
+#
+# Exposed to the internet: 80/443 (Caddy, automatic Let's Encrypt), LiveKit media 7881/tcp, 50000-60000/udp,
+# TURN 3478/udp + 5349/tcp. Postgres and the app are not published.
+name: meetmind-prod
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-meetmind}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../infra/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    build: { context: .., target: migrate }
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meetmind}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  app:
+    build: { context: .., target: runner }
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meetmind}
+      LIVEKIT_URL: http://host.docker.internal:7880
+      TRUST_PROXY: "true"
+      COOKIE_SECURE: "true"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:3100:3100"] # only Caddy (host network) reaches it
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  # The AI interpreter: joins live calls where interpretation is on and speaks translations.
+  interpreter:
+    build: { context: .., target: interpreter }
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meetmind}
+      LIVEKIT_URL: ws://host.docker.internal:7880
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - uploads:/data/uploads # shares the cached interpreter voice with the app
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  livekit:
+    image: livekit/livekit-server:v1.13
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.prod.yaml:/etc/livekit.yaml:ro
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:

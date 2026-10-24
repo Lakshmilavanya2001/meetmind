@@ -1,0 +1,219 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.5 0.17 268);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.62 0.15 268);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.982 0.002 268);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.5 0.17 268);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.68 0.15 268);
+  --primary-foreground: oklch(0.15 0.02 268);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.6 0.15 268);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.68 0.15 268);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+/* ─── Call screen: styled as a phone call ───────────────────────────────────────────────────────── */
+:root {
+  --call-bg: #0a1220;
+  --call-bg-top: #14304a;
+  --call-key: rgb(255 255 255 / 0.09);
+  --call-key-hover: rgb(255 255 255 / 0.16);
+  --call-key-on: #f4f7fb;
+  --call-key-on-fg: #0a1220;
+  --call-ring: #3fd9b8;
+  --call-end: #e5484d;
+  --call-end-hover: #cc3a3f;
+}
+
+.call-screen {
+  background: radial-gradient(120% 70% at 50% 0%, var(--call-bg-top) 0%, var(--call-bg) 55%, #060a12 100%);
+  color: #fff;
+}
+
+/* Speaking: a ring that breathes outward. */
+.call-avatar::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  transition: border-color 150ms ease;
+}
+.call-avatar.is-speaking::before {
+  border-color: var(--call-ring);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--call-ring) 55%, transparent);
+  animation: call-pulse 1.4s ease-out infinite;
+}
+@keyframes call-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--call-ring) 50%, transparent); }
+  100% { box-shadow: 0 0 0 22px color-mix(in srgb, var(--call-ring) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .call-avatar.is-speaking::before { animation: none; }
+}
+
+/*
+ * Keys: every control in the call bar becomes a round key with a label underneath, like a phone's
+ * in-call screen. Rules are !important inside a layer so they beat both Tailwind utilities and
+ * LiveKit's unlayered button styles, whatever component renders the button.
+ */
+@layer components {
+  .phone-key { display: flex; flex-direction: column; align-items: center; gap: 0.4rem; min-width: 3.75rem; }
+  .phone-key-label { font-size: 0.7rem; line-height: 1; color: rgb(255 255 255 / 0.72); white-space: nowrap; }
+  .phone-key button:not(.phone-key-sub *):not(.phone-key-end) {
+    width: 3.5rem !important;
+    height: 3.5rem !important;
+    padding: 0 !important;
+    border-radius: 9999px !important;
+    justify-content: center !important;
+    gap: 0 !important;
+  }
+  .phone-key.is-small button:not(.phone-key-sub *):not(.phone-key-end) {
+    width: 2.75rem !important;
+    height: 2.75rem !important;
+  }
+  .phone-key button svg { width: 1.3rem; height: 1.3rem; }
+  .phone-key.is-small button svg { width: 1.1rem; height: 1.1rem; }
+  /* LiveKit's own buttons (mic, camera, screen share) get the key colours here. */
+  .phone-key button.lk-button { background: var(--call-key) !important; color: #fff !important; border: 0 !important; }
+  .phone-key button.lk-button:hover { background: var(--call-key-hover) !important; }
+  .phone-key button.lk-button[data-lk-source="microphone"][data-lk-enabled="false"] { background: var(--call-key-on) !important; color: var(--call-key-on-fg) !important; }
+  .phone-key button.lk-button:is([data-lk-source="camera"], [data-lk-source="screen_share"])[data-lk-enabled="true"] { background: var(--call-key-on) !important; color: var(--call-key-on-fg) !important; }
+  .phone-key button.lk-button span:not(.lk-sr-only) { display: none; }
+  /* Our own keys: translucent until active. */
+  .phone-key button[data-slot]:not([class*="bg-violet"]):not([aria-pressed="true"]):not([class*="bg-red"]) { background-color: var(--call-key); }
+  .phone-key button[data-slot]:hover { background-color: var(--call-key-hover); }
+  .phone-key button[data-slot][aria-pressed="true"] { background-color: var(--call-key-on) !important; color: var(--call-key-on-fg) !important; }
+  /* The device chooser sits as a small badge on the key's corner. */
+  .phone-key-sub { position: absolute; right: -0.35rem; bottom: -0.2rem; }
+  .phone-key-sub button.lk-button { width: 1.45rem !important; height: 1.45rem !important; min-height: 0 !important; padding: 0 !important; border-radius: 9999px !important; background: #1e2a3d !important; color: #fff !important; border: 2px solid var(--call-bg) !important; }
+  .phone-key-sub button.lk-button svg { width: 0.7rem; height: 0.7rem; }
+}
+@layer components {
+  .phone-key .phone-key-end { width: 4.25rem !important; height: 4.25rem !important; margin-top: -0.375rem; border-radius: 9999px !important; }
+}
+@layer components {
+  @media (max-width: 480px) {
+    .phone-key { min-width: 3.1rem; }
+    .phone-key button:not(.phone-key-sub *):not(.phone-key-end) { width: 3rem !important; height: 3rem !important; }
+    .phone-key.is-small button:not(.phone-key-sub *):not(.phone-key-end) { width: 2.5rem !important; height: 2.5rem !important; }
+    .phone-key .phone-key-end { width: 3.6rem !important; height: 3.6rem !important; margin-top: -0.3rem; }
+    .phone-key-label { font-size: 0.65rem; }
+  }
+}

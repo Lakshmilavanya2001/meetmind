@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: meetmind
+          POSTGRES_PASSWORD: meetmind_dev_password
+          POSTGRES_DB: meetmind_test
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U meetmind" --health-interval 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://meetmind:meetmind_dev_password@localhost:5433/meetmind_test
+      TEST_DATABASE_URL: postgresql://meetmind:meetmind_dev_password@localhost:5433/meetmind_test
+      ENCRYPTION_KEY: ${{ secrets.TEST_ENCRYPTION_KEY || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci --ignore-scripts
+      - run: npx prisma generate
+      - name: Enable extensions
+        run: PGPASSWORD=meetmind_dev_password psql -h localhost -p 5433 -U meetmind -d meetmind_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npx next build
+      - run: npm audit --omit=dev --audit-level=critical
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target runner -t meetmind:ci .
+      - run: docker build --target migrate -t meetmind-migrate:ci .

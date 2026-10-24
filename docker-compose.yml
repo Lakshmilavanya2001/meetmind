@@ -1,0 +1,49 @@
+# Local infrastructure for MeetMind.
+# Usage: docker compose up -d   (Postgres+pgvector on :5433, LiveKit on :7880)
+name: meetmind
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: meetmind-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meetmind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meetmind_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-meetmind}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-meetmind}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Self-hosted LiveKit SFU (Phase 2). Keys come from infra/livekit.yaml.
+  # host networking keeps WebRTC UDP ports simple on Linux.
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: meetmind-livekit
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
+    profiles: ["livekit"]
+
+  # HTTPS reverse proxy for local/LAN use (Phase 2). Run scripts/dev-cert.sh first.
+  proxy:
+    image: caddy:2.10-alpine
+    container_name: meetmind-proxy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./infra/certs:/certs:ro
+    profiles: ["livekit"]
+
+volumes:
+  pgdata:

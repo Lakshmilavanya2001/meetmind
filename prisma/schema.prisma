@@ -1,0 +1,878 @@
+// MeetMind database schema.
+// Deletion policy summary:
+//  - Deleting an Organization cascades to its members, meetings and everything under them.
+//  - Deleting a Meeting cascades to participants, invitations, transcripts, chunks,
+//    summaries, action items, recordings and transcription jobs.
+//  - Users who host meetings cannot be hard-deleted (Restrict); deactivate them instead.
+//  - Audit/agent logs keep their rows when the actor is removed (SetNull).
+// Retention: Organization.transcriptRetentionDays / recordingRetentionDays drive the purge job.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST // external person invited by email: can only see meetings they were invited to
+}
+
+enum MeetingStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELED
+}
+
+enum MeetingProvider {
+  LIVEKIT
+  MICROSOFT_TEAMS
+}
+
+enum CallType {
+  VIDEO
+  VOICE
+}
+
+enum RingStatus {
+  RINGING
+  ACCEPTED
+  DECLINED
+  MISSED
+  CANCELED
+}
+
+enum ParticipantRole {
+  HOST
+  COHOST
+  ATTENDEE
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+  EXPIRED
+}
+
+enum InvitationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum CalendarProvider {
+  INTERNAL
+  GOOGLE
+  OUTLOOK
+}
+
+enum CalendarEventStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELED
+}
+
+enum RecordingStatus {
+  RECORDING
+  PROCESSING
+  READY
+  FAILED
+  DELETED
+}
+
+enum TranscriptStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum TranscriptSource {
+  LIVE_CAPTURE
+  RECORDING
+  UPLOAD
+  PROVIDER_NATIVE
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum ActionItemStatus {
+  OPEN
+  DONE
+}
+
+enum AgentMessageRole {
+  USER
+  ASSISTANT
+  TOOL
+  SYSTEM
+}
+
+enum AgentActionStatus {
+  PENDING_CONFIRMATION
+  SUCCEEDED
+  FAILED
+  REJECTED
+  CANCELED
+}
+
+enum IntegrationProvider {
+  LIVEKIT
+  MICROSOFT_TEAMS
+  GOOGLE_CALENDAR
+  OUTLOOK_CALENDAR
+  SMTP
+}
+
+enum IntegrationStatus {
+  DISABLED
+  ACTIVE
+  ERROR
+}
+
+// ─── Identity & tenancy ─────────────────────────────────────────────────
+
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique // stored lower-cased
+  passwordHash      String
+  displayName       String
+  title             String?
+  department        String?
+  timezone          String    @default("UTC") // IANA zone, e.g. "Asia/Kolkata"
+  preferredLanguage String    @default("en") // BCP-47 primary language for the assistant and captions
+  phoneNumber       String? // E.164, e.g. +919812345678 (used for SMS reminders once verified)
+  phoneVerifiedAt   DateTime?
+  smsReminders      Boolean   @default(false) // also text reminders to the verified number
+  summaryEmail      Boolean   @default(true) // email me call summaries
+  summarySms        Boolean   @default(false) // text me call summaries (verified number only)
+  phoneVerifiedVia  String? // "twilio" or "outbox"; outbox-verified numbers never get real SMS
+  avatarUrl         String?
+  isActive          Boolean   @default(true)
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  sessions            Session[]
+  memberships         OrganizationMember[]
+  hostedMeetings      Meeting[]               @relation("MeetingHost")
+  participations      MeetingParticipant[]    @relation("ParticipantUser")
+  invitationsSent     MeetingInvitation[]     @relation("InvitationSender")
+  invitationsReceived MeetingInvitation[]     @relation("InvitationRecipient")
+  calendarEvents      CalendarEvent[]
+  recordingsStarted   Recording[]
+  reminders           Reminder[]
+  bookings            Booking[]
+  smsMessages         SmsMessage[]
+  emailMessages       EmailMessage[]
+  summaryDeliveries   SummaryDelivery[]
+  transcriptSegments  TranscriptSegment[]
+  summariesCreated    MeetingSummary[]
+  actionItems         ActionItem[]
+  conversations       AgentConversation[]
+  agentActions        AgentActionLog[]
+  integrations        IntegrationConnection[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  callsMade           CallRing[]              @relation("RingCaller")
+  callsReceived       CallRing[]              @relation("RingCallee")
+
+  @@index([displayName])
+  @@index([displayName(ops: raw("gin_trgm_ops"))], type: Gin, map: "User_displayName_trgm_idx")
+  @@index([email(ops: raw("gin_trgm_ops"))], type: Gin, map: "User_email_trgm_idx")
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  tokenHash            String   @unique // SHA-256 of the opaque cookie token; raw token never stored
+  userId               String
+  activeOrganizationId String?
+  expiresAt            DateTime
+  lastSeenAt           DateTime @default(now())
+  userAgent            String?
+  ipAddress            String?
+  createdAt            DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Organization {
+  id                      String   @id @default(cuid())
+  name                    String
+  slug                    String   @unique
+  joinCode                String   @unique // shared with colleagues to join this workspace
+  allowExternalInvites    Boolean  @default(false) // may hosts email-invite unregistered people?
+  agentAutoExecute        Boolean  @default(false) // may the AI run sensitive actions without confirmation?
+  transcriptRetentionDays Int? // null = keep until deleted manually
+  recordingRetentionDays  Int?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  members       OrganizationMember[]
+  meetings      Meeting[]
+  conversations AgentConversation[]
+  agentActions  AgentActionLog[]
+  integrations  IntegrationConnection[]
+  auditLogs     AuditLog[]
+  chunks        TranscriptChunk[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           OrgRole  @default(MEMBER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+// ─── Meetings ───────────────────────────────────────────────────────────
+
+model Meeting {
+  id                    String          @id @default(cuid())
+  organizationId        String
+  hostId                String
+  title                 String
+  description           String?
+  status                MeetingStatus   @default(SCHEDULED)
+  joinCode              String          @unique // human-friendly meeting ID, e.g. "kqd-mxta-pwe"
+  scheduledStart        DateTime?
+  scheduledEnd          DateTime?
+  timezone              String          @default("UTC")
+  startedAt             DateTime?
+  endedAt               DateTime?
+  provider              MeetingProvider @default(LIVEKIT)
+  providerRoomId        String? // provider-specific identifier (LiveKit room name, Teams meeting id…)
+  providerMetadata      Json?
+  transcriptionEnabled  Boolean         @default(false)
+  recordingEnabled      Boolean         @default(false)
+  callType              CallType        @default(VIDEO)
+  isDirectCall          Boolean         @default(false) // started by calling people (rings them) rather than scheduled
+  autoSummaryAt         DateTime? // when the post-call summary was attempted
+  interpretationEnabled Boolean         @default(false) // AI interpreter joins the call and speaks translations
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  host                 User                  @relation("MeetingHost", fields: [hostId], references: [id], onDelete: Restrict)
+  participants         MeetingParticipant[]
+  invitations          MeetingInvitation[]
+  calendarEvents       CalendarEvent[]
+  recordings           Recording[]
+  transcript           MeetingTranscript?
+  segments             TranscriptSegment[]
+  chunks               TranscriptChunk[]
+  summaries            MeetingSummary[]
+  actionItems          ActionItem[]
+  transcriptionJobs    TranscriptionJob[]
+  conversations        AgentConversation[]
+  rings                CallRing[]
+  interpretationEvents InterpretationEvent[]
+  summaryDeliveries    SummaryDelivery[]
+
+  @@unique([provider, providerRoomId])
+  @@index([organizationId, scheduledStart])
+  @@index([organizationId, status])
+  @@index([hostId])
+}
+
+model MeetingParticipant {
+  id                     String          @id @default(cuid())
+  meetingId              String
+  userId                 String
+  role                   ParticipantRole @default(ATTENDEE)
+  invitedById            String?
+  providerIdentity       String? // identity inside the calling provider
+  firstJoinedAt          DateTime?
+  lastJoinedAt           DateTime?
+  leftAt                 DateTime?
+  removedAt              DateTime? // removed by host; blocks new tokens
+  transcriptionConsentAt DateTime?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  callLanguage String? // language this person speaks and wants to hear during interpretation
+  meeting      Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user         User    @relation("ParticipantUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([meetingId, userId])
+  @@index([userId])
+}
+
+model MeetingInvitation {
+  id            String            @id @default(cuid())
+  meetingId     String
+  invitedById   String?
+  inviteeUserId String? // registered user
+  inviteeEmail  String? // external invite (only when org allows it)
+  channel       InvitationChannel @default(IN_APP)
+  status        InvitationStatus  @default(PENDING)
+  tokenHash     String?           @unique // for external email links
+  expiresAt     DateTime?
+  respondedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  meeting   Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("InvitationSender", fields: [invitedById], references: [id], onDelete: SetNull)
+  invitee   User?   @relation("InvitationRecipient", fields: [inviteeUserId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId])
+  @@index([inviteeUserId, status])
+  @@index([inviteeEmail])
+}
+
+model CalendarEvent {
+  id              String              @id @default(cuid())
+  userId          String
+  meetingId       String?
+  provider        CalendarProvider    @default(INTERNAL)
+  externalEventId String?
+  title           String
+  startsAt        DateTime
+  endsAt          DateTime
+  status          CalendarEventStatus @default(CONFIRMED)
+  isBusy          Boolean             @default(true)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  meeting Meeting? @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, meetingId])
+  @@unique([provider, externalEventId])
+  @@index([userId, startsAt, endsAt])
+}
+
+// ─── Recording & transcription ──────────────────────────────────────────
+
+model Recording {
+  id          String          @id @default(cuid())
+  meetingId   String
+  startedById String?
+  status      RecordingStatus @default(RECORDING)
+  storageKey  String? // path/key in object storage, never a public URL
+  mimeType    String?
+  sizeBytes   BigInt?
+  durationMs  Int?
+  startedAt   DateTime        @default(now())
+  endedAt     DateTime?
+  expiresAt   DateTime? // retention deadline
+  chunkCount  Int? // pieces the uploader will send; when all are in, the whole call is transcribed with speakers
+  language    String? // spoken language of the recording
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  meeting   Meeting            @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  startedBy User?              @relation(fields: [startedById], references: [id], onDelete: SetNull)
+  jobs      TranscriptionJob[]
+
+  @@index([meetingId])
+  @@index([expiresAt])
+}
+
+model MeetingTranscript {
+  id        String           @id @default(cuid())
+  meetingId String           @unique
+  status    TranscriptStatus @default(PENDING)
+  language  String?
+  error     String?
+  indexedAt DateTime? // when chunks/embeddings were last rebuilt
+  expiresAt DateTime? // retention deadline
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  meeting   Meeting             @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  segments  TranscriptSegment[]
+  chunks    TranscriptChunk[]
+  summaries MeetingSummary[]
+
+  @@index([expiresAt])
+}
+
+model TranscriptSegment {
+  id            String           @id @default(cuid())
+  transcriptId  String
+  meetingId     String
+  speakerUserId String? // set only when attribution is reliable
+  speakerLabel  String // display label, e.g. "Rahul Sharma" or "Speaker 2"
+  startMs       Int // offset from meeting start
+  endMs         Int
+  text          String
+  source        TranscriptSource
+  confidence    Float?
+  language      String? // language it was recognised in ("en", "hi"…), when known
+  createdAt     DateTime         @default(now())
+
+  transcript   MeetingTranscript    @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  meeting      Meeting              @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  speaker      User?                @relation(fields: [speakerUserId], references: [id], onDelete: SetNull)
+  translations SegmentTranslation[]
+
+  @@index([transcriptId, startMs])
+  @@index([meetingId])
+  @@index([meetingId, createdAt])
+}
+
+/// Cached machine translation of one transcript segment (live captions).
+model SegmentTranslation {
+  segmentId String
+  language  String
+  text      String
+  createdAt DateTime @default(now())
+
+  segment TranscriptSegment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@id([segmentId, language])
+}
+
+model TranscriptChunk {
+  id             String                        @id @default(cuid())
+  transcriptId   String
+  meetingId      String
+  organizationId String // denormalised for access-filtered retrieval
+  chunkIndex     Int
+  text           String
+  speakerLabels  String[]
+  startMs        Int
+  endMs          Int
+  // HNSW index "TranscriptChunk_embedding_hnsw_idx" is created in raw SQL (see init migration);
+  // strip its DROP INDEX from any future generated migration.
+  embedding      Unsupported("halfvec(2048)")?
+  createdAt      DateTime                      @default(now())
+
+  transcript   MeetingTranscript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  meeting      Meeting           @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, chunkIndex])
+  @@index([meetingId])
+  @@index([organizationId])
+}
+
+model TranscriptionJob {
+  id             String           @id @default(cuid())
+  meetingId      String
+  recordingId    String?
+  source         TranscriptSource
+  idempotencyKey String           @unique // prevents duplicate processing of the same audio
+  status         JobStatus        @default(QUEUED)
+  attempts       Int              @default(0)
+  runAfter       DateTime         @default(now()) // retry back-off: not picked up before this time
+  lastError      String?
+  payload        Json?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  meeting   Meeting    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  recording Recording? @relation(fields: [recordingId], references: [id], onDelete: SetNull)
+
+  @@index([status, runAfter])
+  @@index([meetingId])
+}
+
+model MeetingSummary {
+  id           String   @id @default(cuid())
+  meetingId    String
+  transcriptId String?
+  createdById  String?
+  content      String // markdown summary
+  decisions    Json // [{ text, evidence: [{startMs,endMs,speaker}] }]
+  openIssues   Json     @default("[]")
+  model        String
+  createdAt    DateTime @default(now())
+
+  meeting     Meeting            @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  transcript  MeetingTranscript? @relation(fields: [transcriptId], references: [id], onDelete: SetNull)
+  createdBy   User?              @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  actionItems ActionItem[]
+
+  @@index([meetingId, createdAt])
+}
+
+model ActionItem {
+  id             String           @id @default(cuid())
+  meetingId      String
+  summaryId      String?
+  description    String
+  assigneeUserId String?
+  assigneeName   String? // as spoken, when not resolvable to a user
+  dueDate        DateTime?
+  status         ActionItemStatus @default(OPEN)
+  sourceStartMs  Int?
+  sourceEndMs    Int?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  meeting  Meeting         @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  summary  MeetingSummary? @relation(fields: [summaryId], references: [id], onDelete: SetNull)
+  assignee User?           @relation(fields: [assigneeUserId], references: [id], onDelete: SetNull)
+
+  @@index([meetingId])
+  @@index([assigneeUserId, status])
+}
+
+// ─── AI agent ───────────────────────────────────────────────────────────
+
+model AgentConversation {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  meetingId      String? // set when the chat happens inside a meeting
+  title          String   @default("New conversation")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  meeting      Meeting?         @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  messages     AgentMessage[]
+  actions      AgentActionLog[]
+  plans        AgentPlan[]
+
+  @@index([userId, updatedAt])
+}
+
+model AgentMessage {
+  id             String           @id @default(cuid())
+  conversationId String
+  role           AgentMessageRole
+  content        String
+  toolCalls      Json? // assistant tool calls as returned by the model
+  toolCallId     String?
+  toolName       String?
+  metadata       Json? // citations, UI hints
+  createdAt      DateTime         @default(now())
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+enum PlanStatus {
+  PROPOSED
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+  REJECTED
+  EXPIRED
+}
+
+/// A multi-step plan from the Planner agent: approved once, then executed step by step.
+model AgentPlan {
+  id             String     @id @default(cuid())
+  conversationId String
+  userId         String
+  organizationId String
+  goal           String
+  steps          Json // [{ index, tool, args, summary, why, dependsOn, agent, status, resultSummary?, error?, link? }]
+  status         PlanStatus @default(PROPOSED)
+  parentId       String? // the plan this one revises after a failure
+  revision       Int        @default(0)
+  decidedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  conversation AgentConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([userId, status])
+}
+
+model AgentActionLog {
+  id                   String            @id @default(cuid())
+  conversationId       String?
+  userId               String?
+  organizationId       String
+  toolName             String
+  arguments            Json
+  result               Json?
+  status               AgentActionStatus
+  errorMessage         String?
+  requiresConfirmation Boolean           @default(false)
+  agent                String? // which specialist agent acted (meetings, dining, travel…)
+  confirmedAt          DateTime?
+  durationMs           Int?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  conversation AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  user         User?              @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([conversationId])
+}
+
+// ─── Integrations, audit & notifications ────────────────────────────────
+
+model IntegrationConnection {
+  id                   String              @id @default(cuid())
+  organizationId       String
+  userId               String? // null = org-wide connection
+  provider             IntegrationProvider
+  status               IntegrationStatus   @default(DISABLED)
+  externalAccountId    String?
+  encryptedCredentials String? // AES-256-GCM ciphertext; never plaintext
+  scopes               String[]
+  config               Json?
+  expiresAt            DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider, userId])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  actorUserId    String?
+  action         String // e.g. "auth.login", "meeting.create", "member.role_change"
+  targetType     String?
+  targetId       String?
+  metadata       Json?
+  ipAddress      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?         @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([actorUserId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String // e.g. "meeting.invitation"
+  title     String
+  body      String?
+  link      String?
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+/// An incoming-call prompt shown to one person ("Aisha is calling…"). Expires unanswered → MISSED.
+model CallRing {
+  id          String     @id @default(cuid())
+  meetingId   String
+  callerId    String
+  calleeId    String
+  status      RingStatus @default(RINGING)
+  expiresAt   DateTime
+  respondedAt DateTime?
+  createdAt   DateTime   @default(now())
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  caller  User    @relation("RingCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  callee  User    @relation("RingCallee", fields: [calleeId], references: [id], onDelete: Cascade)
+
+  @@index([calleeId, status, expiresAt])
+  @@index([meetingId])
+}
+
+// ─── Reminders, SMS and task assistance (Phase 11) ──────────────────────
+
+enum ReminderStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  CANCELED
+}
+
+/// A personal reminder: always in-app, and by SMS when requested and the number is verified.
+model Reminder {
+  id             String         @id @default(cuid())
+  organizationId String
+  userId         String
+  text           String
+  dueAt          DateTime
+  sms            Boolean        @default(false)
+  status         ReminderStatus @default(PENDING)
+  source         String         @default("user") // "user" | "assistant" | "action_item"
+  meetingId      String?
+  actionItemId   String?        @unique // one reminder per action item
+  sentAt         DateTime?
+  smsStatus      String? // "sent" | "outbox" | "failed: …" | "skipped: …"
+  createdAt      DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, dueAt])
+  @@index([userId, status, dueAt])
+}
+
+enum SmsStatus {
+  OUTBOX // dev provider: recorded, not sent to a phone
+  SENT
+  FAILED
+}
+
+/// Every text message MeetMind sends (or would send), for audit and the dev outbox.
+model SmsMessage {
+  id         String    @id @default(cuid())
+  userId     String?
+  to         String
+  body       String
+  purpose    String // "verification" | "reminder"
+  provider   String // "twilio" | "outbox"
+  providerId String?
+  status     SmsStatus
+  error      String?
+  createdAt  DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
+
+model PhoneVerification {
+  userId    String   @id
+  phone     String
+  codeHash  String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+enum BookingKind {
+  FOOD
+  CAB
+  TABLE
+  MOVIE
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELED
+}
+
+/// A food order, cab or table reservation made through the assistant. Sandbox providers make no real order.
+model Booking {
+  id             String        @id @default(cuid())
+  organizationId String
+  userId         String
+  kind           BookingKind
+  provider       String // "sandbox"
+  reference      String
+  status         BookingStatus @default(CONFIRMED)
+  title          String // e.g. "Order from Meghana Foods"
+  details        Json
+  totalPaise     Int?
+  scheduledFor   DateTime?
+  meetingId      String?
+  canceledAt     DateTime?
+  createdAt      DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+/// One translated line spoken by the AI interpreter, with its latency breakdown (for the latency report).
+model InterpretationEvent {
+  id             String   @id @default(cuid())
+  meetingId      String
+  segmentId      String?
+  speakerUserId  String?
+  sourceLanguage String
+  targetLanguage String
+  sourceText     String
+  translatedText String
+  speechEndAt    DateTime // when the speaker stopped talking
+  asrMs          Int // end of speech → transcript
+  mtMs           Int // translation
+  ttsMs          Int // speech synthesis
+  queueMs        Int // waiting behind earlier lines on the same language track
+  totalMs        Int // end of speech → translated audio starts playing in the call
+  createdAt      DateTime @default(now())
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId, createdAt])
+}
+
+// ─── Call summary delivery (Phase 16) ───────────────────────────────────
+
+enum DeliveryChannel {
+  IN_APP
+  EMAIL
+  SMS
+}
+
+enum DeliveryStatus {
+  SENT
+  OUTBOX // development outbox: recorded, not actually sent
+  FAILED
+  SKIPPED // channel off for this person, or no verified number
+}
+
+/// One person × one channel for one call summary.
+model SummaryDelivery {
+  id        String          @id @default(cuid())
+  meetingId String
+  summaryId String
+  userId    String
+  channel   DeliveryChannel
+  status    DeliveryStatus
+  detail    String?
+  createdAt DateTime        @default(now())
+
+  meeting Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([meetingId, createdAt])
+}
+
+/// Emails MeetMind sends (or, in development, records in the outbox instead of sending).
+model EmailMessage {
+  id        String    @id @default(cuid())
+  userId    String?
+  to        String
+  subject   String
+  text      String
+  purpose   String // "summary" …
+  status    SmsStatus // OUTBOX | SENT | FAILED
+  error     String?
+  createdAt DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
