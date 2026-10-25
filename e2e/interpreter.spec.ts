@@ -106,8 +106,8 @@ test("conference: one English speaker, Hindi and Spanish listeners each hear the
   }
 });
 
-test("Indian languages: a Tamil speaker heard in Hindi (direct Indic → Indic)", async ({ baseURL }) => {
-  const [ba, bb] = await Promise.all([launch("e2e/fixtures/caller-ta.wav"), launch("e2e/fixtures/silence.wav")]);
+test("Hindi speaker heard in French (Parakeet recognition, Magpie voice)", async ({ baseURL }) => {
+  const [ba, bb] = await Promise.all([launch("e2e/fixtures/caller-hi.wav"), launch("e2e/fixtures/silence.wav")]);
   try {
     const a = await signIn(ba, "priya@acme.test", baseURL!);
     const b = await signIn(bb, "amit@acme.test", baseURL!);
@@ -119,22 +119,20 @@ test("Indian languages: a Tamil speaker heard in Hindi (direct Indic → Indic)"
     await b.getByRole("button", { name: "Join now" }).click();
     for (const p of [a, b]) await expect(p.getByRole("status").filter({ hasText: "Connected" })).toBeVisible();
     await a.getByRole("button", { name: /^AI interpreter/ }).click();
-    await a.getByRole("menuitem", { name: /Tamil/ }).click();
+    await a.getByRole("menuitem", { name: /Hindi/ }).click(); // picking a language turns the interpreter on
     await b.getByRole("button", { name: /^AI interpreter/ }).click();
-    await b.getByRole("menuitem", { name: /Hindi/ }).click();
-    await a.getByRole("button", { name: /^AI interpreter/ }).click();
-    await expect(a.getByText(/Built with indic-translate and indic-speak from Bodhan AI \/ AI4Bharat/)).toBeVisible();
-    await a.keyboard.press("Escape"); // picking a language already turned the interpreter on
+    await b.getByRole("menuitem", { name: /French/ }).click();
 
     const panelB = b.getByRole("region", { name: "Live interpretation" });
     await expect(panelB.getByText(/heard after \d+\.\d s/).first()).toBeVisible({ timeout: 90_000 });
-    await expect(panelB.locator('p[lang="hi"]').first()).toContainText(/[ऀ-ॿ]{3}/);
-    await expect(panelB.locator('p[lang="ta"]').first()).toContainText(/[஀-௿]{3}/); // the Tamil original underneath
+    await expect(panelB.locator('p[lang="fr"]').first()).toContainText(/[a-zà-ÿ]{3}/i);
+    await expect(panelB.locator('p[lang="hi"]').first()).toContainText(/[ऀ-ॿ]{3}/); // the Hindi original underneath
     const report = await (await a.request.get(`/api/meetings/${code}/interpretation/latency`)).json();
-    console.log("[tamil latency]", JSON.stringify(report.byPair.map((p: { pair: string; avgMs: number; avgAsrMs: number; avgMtMs: number; avgTtsMs: number }) => [p.pair, p.avgMs, p.avgAsrMs, p.avgMtMs, p.avgTtsMs])));
-    expect(report.byPair.map((p: { pair: string }) => p.pair)).toContain("ta→hi");
-    await b.screenshot({ path: "test-results/interpreter-tamil.png" });
+    console.log("[hindi→french latency]", JSON.stringify(report.byPair.map((p: { pair: string; avgMs: number; avgAsrMs: number; avgMtMs: number; avgTtsMs: number }) => [p.pair, p.avgMs, p.avgAsrMs, p.avgMtMs, p.avgTtsMs])));
+    expect(report.byPair.map((p: { pair: string }) => p.pair)).toContain("hi→fr");
+    await b.screenshot({ path: "test-results/interpreter-hindi-french.png" });
   } finally {
     await Promise.all([ba.close(), bb.close()]);
   }
 });
+

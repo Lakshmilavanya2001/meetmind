@@ -55,7 +55,7 @@ The migrate service applies new migrations before the new app starts.
 - **Uploads volume:** holds only audio waiting to be transcribed; it's deleted after processing.
 
 ## Keeping the host processes running (POC host)
-On the POC host, Postgres, LiveKit and Caddy are Docker containers with restart policies. Three processes run directly on the host: the app (`npm start`), the Indic SSH tunnel (`scripts/indic-tunnel.sh`) and the AI interpreter (`npm run interpreter`). `scripts/meetmind-services.sh` supervises them:
+On the POC host, Postgres, LiveKit and Caddy are Docker containers with restart policies. Processes run directly on the host: the app (`npm start`), the AI interpreter (`npm run interpreter`) and, only while `INDIC_*` URLs are set in `.env`, the Indic SSH tunnel (`scripts/indic-tunnel.sh`). Since 2026-10-24 calls use Parakeet and Magpie, so the tunnel isn't started. `status` also checks Magpie (`MAGPIE_TTS_URL`). `scripts/meetmind-services.sh` supervises them:
 
 ```bash
 scripts/meetmind-services.sh start

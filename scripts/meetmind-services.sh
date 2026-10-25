@@ -39,7 +39,8 @@ supervise() {
   trap 'pkill -P $$; for p in $(jobs -p); do pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; done; exit 0' TERM INT
   # Wait (up to 2 min after boot) for Docker's Postgres, so the app doesn't start against a missing database.
   for _ in $(seq 1 60); do (exec 3<>/dev/tcp/127.0.0.1/5433) 2>/dev/null && break; sleep 2; done
-  keep_running tunnel scripts/indic-tunnel.sh &
+  # The Indic tunnel is only needed while the Indic models are configured (off since 2026-10-24: calls use Parakeet + Magpie).
+  if grep -qE '^INDIC_(ASR|TRANSLATE|TTS)_URL=.+' "$DIR/.env" 2>/dev/null; then keep_running tunnel scripts/indic-tunnel.sh & fi
   keep_running app npm start &
   sleep 5
   keep_running interpreter npm run interpreter &
@@ -66,7 +67,8 @@ case "${1:-}" in
   status)
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "supervisor: running (pid $(cat "$PIDFILE"))"; else echo "supervisor: not running"; fi
     echo "app: $(curl -s -o /dev/null -m 3 -w '%{http_code}' http://localhost:3100/login)"
-    echo "indic tunnel: $(curl -s -m 3 http://127.0.0.1:18001/health || echo unreachable)"
+    if grep -qE '^INDIC_(ASR|TRANSLATE|TTS)_URL=.+' "$DIR/.env" 2>/dev/null; then echo "indic tunnel: $(curl -s -m 3 http://127.0.0.1:18001/health || echo unreachable)"; fi
+    echo "magpie tts: $(curl -s -m 3 -o /dev/null -w '%{http_code}' "$(grep -oP '^MAGPIE_TTS_URL=\K.*' "$DIR/.env" 2>/dev/null)/health/ready" || echo unreachable)"
     tail -n 3 "$STATE/supervisor.log" 2>/dev/null ;;
   *) echo "usage: $0 start|stop|status"; exit 2 ;;
 esac

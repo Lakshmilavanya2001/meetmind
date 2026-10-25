@@ -6,8 +6,12 @@
 export type SegmenterOptions = { endSilenceMs: number; minSpeechMs: number; maxUtteranceMs: number; minLevel: number };
 export type SegmentEvent = { type: "start" } | { type: "end"; speechMs: number; forced: boolean };
 
-// 800 ms keeps sentences whole (comma pauses don't split them) while staying quick; tune with INTERPRETER_PAUSE_MS.
-export const DEFAULT_SEGMENTER: SegmenterOptions = { endSilenceMs: 800, minSpeechMs: 250, maxUtteranceMs: 15_000, minLevel: 0.012 };
+// 600 ms: measured 2026-10-25, 0.2 s faster than 800 ms and still one line per sentence (500 ms saves 0.1 s more
+// but splits more often at hesitations, and half-sentences translate worse). Tune with INTERPRETER_PAUSE_MS.
+export const DEFAULT_SEGMENTER: SegmenterOptions = { endSilenceMs: 600, minSpeechMs: 250, maxUtteranceMs: 15_000, minLevel: 0.012 };
+// For someone listening for "Hey Mind": a shorter pause cuts "Hey Mind, … ?" into pieces, and the pieces can reach
+// the other callers before the assistant's verdict (measured 2026-10-25). Their speech keeps the longer pause.
+export const WAKE_PAUSE_MS = 800;
 export const segmenterOptions = (env: Record<string, string | undefined> = process.env): SegmenterOptions => ({
   ...DEFAULT_SEGMENTER,
   endSilenceMs: Math.min(2000, Math.max(300, Number(env.INTERPRETER_PAUSE_MS) || DEFAULT_SEGMENTER.endSilenceMs)),
@@ -31,6 +35,15 @@ export class UtteranceSegmenter {
   lastVoiceAt = 0;
 
   constructor(private opts: SegmenterOptions = DEFAULT_SEGMENTER) {}
+
+  /** Change how much silence ends an utterance (takes effect from the next frame). */
+  setEndSilence(ms: number) {
+    this.opts = { ...this.opts, endSilenceMs: ms };
+  }
+
+  get endSilenceMs() {
+    return this.opts.endSilenceMs;
+  }
 
   static level(samples: Int16Array) {
     let sum = 0;

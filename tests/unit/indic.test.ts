@@ -123,10 +123,11 @@ describe("Indic translation and file recognition", () => {
 
   it("language coverage and the interpreter's language list", () => {
     expect([indicCovers("en"), indicCovers("ta"), indicCovers("es"), indicCovers(null)]).toEqual([true, true, false, false]);
-    expect(interpreterLanguageCodes()).toEqual(["en", "hi", "es"]);
+    // Calls use the 12 languages Parakeet and Magpie both support, whether or not the Indic models are configured.
+    const twelve = ["en", "hi", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "ar", "vi"];
+    expect(interpreterLanguageCodes()).toEqual(twelve);
     process.env.INDIC_ASR_URL = "http://asr";
-    const all = interpreterLanguageCodes();
-    expect(all).toHaveLength(24);
-    expect(all).toEqual(expect.arrayContaining(["en", "es", "hi", "ta", "te", "bn", "sat", "ur"]));
+    expect(interpreterLanguageCodes()).toEqual(twelve);
+    expect(interpreterLanguageCodes()).not.toContain("ta");
   });
 });

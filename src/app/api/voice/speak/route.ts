@@ -3,12 +3,13 @@ import { authed, readJson } from "@/server/http";
 import { rateLimit } from "@/server/rate-limit";
 import { getTtsProvider } from "@/server/providers/tts";
 import { STREAM_TTS_RATE, streamIndicSpeech } from "@/server/providers/indic";
+import { MAGPIE_RATE, streamMagpieSpeech } from "@/server/providers/magpie";
 import { AppError } from "@/server/errors";
 
 // POST { text, language, stream? } → speech for an assistant reply.
-// With stream: true, languages indic-speak covers (English + 22 Indian languages) come back as raw 16-bit PCM
-// ("audio/L16; rate=24000") while it's being generated, so playback starts in about 0.4 s. Otherwise, or if
-// streaming fails before any audio, the whole reply comes back as one WAV.
+// With stream: true, the 12 languages Magpie covers come back as raw 16-bit PCM ("audio/L16; rate=22050")
+// while it's being generated (indic-speak too, if INDIC_TTS_URL is set). Otherwise, or if streaming fails
+// before any audio, the whole reply comes back as one WAV.
 // Replies are spoken a sentence at a time, so the limit allows several requests per answer.
 export const POST = authed(async (req, ctx) => {
   rateLimit(`speak:${ctx.userId}`, 150, 60_000);
@@ -16,11 +17,16 @@ export const POST = authed(async (req, ctx) => {
     .object({ text: z.string().trim().min(1).max(800), language: z.string().regex(/^[a-z]{2,3}$/).default("en"), stream: z.boolean().optional() })
     .parse(await readJson(req));
   if (stream) {
-    const live = await streamIndicSpeech(text, language, req.signal).catch((err) => {
-      console.warn("[voice] streamed speech failed, using the whole-file voice:", (err as Error).message);
+    const failed = (err: unknown) => {
+      console.warn("[voice] streamed speech failed, trying the next voice:", (err as Error).message);
       return null;
-    });
-    if (live) return new Response(live, { headers: { "content-type": `audio/L16; rate=${STREAM_TTS_RATE}; channels=1`, "cache-control": "no-store", "x-accel-buffering": "no" } });
+    };
+    const pcm = (body: ReadableStream<Uint8Array>, rate: number) =>
+      new Response(body, { headers: { "content-type": `audio/L16; rate=${rate}; channels=1`, "cache-control": "no-store", "x-accel-buffering": "no" } });
+    const magpie = await streamMagpieSpeech(text, language, { signal: req.signal }).catch(failed);
+    if (magpie) return pcm(magpie, MAGPIE_RATE);
+    const indic = await streamIndicSpeech(text, language, req.signal).catch(failed);
+    if (indic) return pcm(indic, STREAM_TTS_RATE);
   }
   const tts = getTtsProvider();
   const out = tts ? await tts.synthesize(text, { language }).catch(() => null) : null;

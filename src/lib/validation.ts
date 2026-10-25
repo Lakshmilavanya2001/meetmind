@@ -68,6 +68,13 @@ export const LANGUAGES = [
   { code: "es", name: "Spanish" },
   { code: "fr", name: "French" },
   { code: "de", name: "German" },
+  { code: "it", name: "Italian" },
+  { code: "pt", name: "Portuguese" },
+  { code: "zh", name: "Chinese (中文)" },
+  { code: "ja", name: "Japanese (日本語)" },
+  { code: "ko", name: "Korean (한국어)" },
+  { code: "ar", name: "Arabic (العربية)" },
+  { code: "vi", name: "Vietnamese (Tiếng Việt)" },
 ] as const;
 export const languageSchema = z.enum(LANGUAGES.map((l) => l.code) as [string, ...string[]]);
 export const phoneSchema = z

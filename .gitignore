@@ -52,3 +52,6 @@ infra/livekit.yaml
 /tests/.tmp
 /deploy/.env.production
 /deploy/livekit.prod.yaml
+
+# editor swap files
+*.swp

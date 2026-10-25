@@ -76,7 +76,7 @@ describe("interpretation settings", () => {
     const { host, guest, meeting } = await setup();
     await setInterpretation(host, meeting.joinCode, { enabled: true });
     expect((await setMyCallLanguage(guest, meeting.joinCode, { language: "hi" })).myLanguage).toBe("hi");
-    await expect(setMyCallLanguage(guest, meeting.joinCode, { language: "fr" })).rejects.toBeTruthy();
+    await expect(setMyCallLanguage(guest, meeting.joinCode, { language: "ta" })).rejects.toBeTruthy(); // Tamil isn't a call language (Parakeet + Magpie)
     await setTranscription(host, meeting.joinCode, { enabled: false });
     expect((await getInterpretationState(guest, meeting.joinCode)).enabled).toBe(false);
   });

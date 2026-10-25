@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UtteranceSegmenter, DEFAULT_SEGMENTER, segmenterOptions } from "@/server/interpreter/segmenter";
+import { UtteranceSegmenter, DEFAULT_SEGMENTER, segmenterOptions, WAKE_PAUSE_MS, type SegmentEvent } from "@/server/interpreter/segmenter";
 import { parseWav, resampleInt16, toMono } from "@/server/interpreter/audio";
 
 const frame = (level: number, ms = 10) => {
@@ -52,9 +52,9 @@ describe("utterance segmenter", () => {
   });
 
   it("the pause is configurable within safe bounds", () => {
-    expect(segmenterOptions({ INTERPRETER_PAUSE_MS: "600" }).endSilenceMs).toBe(600);
+    expect(segmenterOptions({ INTERPRETER_PAUSE_MS: "800" }).endSilenceMs).toBe(800);
     expect(segmenterOptions({ INTERPRETER_PAUSE_MS: "50" }).endSilenceMs).toBe(300);
-    expect(segmenterOptions({}).endSilenceMs).toBe(800);
+    expect(segmenterOptions({}).endSilenceMs).toBe(600); // default since 2026-10-25 (measured: 0.2 s faster, still whole sentences)
   });
 });
 
@@ -71,5 +71,25 @@ describe("interpreter audio helpers", () => {
     expect([...toMono(wav.samples, 2)]).toEqual([200, -200]);
     expect(resampleInt16(new Int16Array(240), 24000, 48000)).toHaveLength(480);
     expect(() => parseWav(Buffer.from("nope"))).toThrow();
+  });
+});
+
+describe("utterance segmenter: per-speaker pause", () => {
+  it("the pause can change during a call (shorter normally, longer while listening for Hey Mind)", () => {
+    const seg = new UtteranceSegmenter({ ...DEFAULT_SEGMENTER, endSilenceMs: 600 });
+    const at = (ms: number) => ms;
+    let t = 0;
+    const push = (level: number, ms: number) => {
+      const out: (SegmentEvent | null)[] = [];
+      for (let i = 0; i < ms / 100; i++) out.push(seg.push(new Int16Array(1600).fill(Math.round(level * 32767)), at((t += 100))));
+      return out.filter(Boolean);
+    };
+    push(0.3, 1000);
+    expect(push(0, 700).some((e) => e!.type === "end")).toBe(true); // 600 ms of silence ends it
+    seg.setEndSilence(WAKE_PAUSE_MS);
+    expect(seg.endSilenceMs).toBe(800);
+    push(0.3, 1000);
+    expect(push(0, 700).some((e) => e!.type === "end")).toBe(false); // 700 ms isn't enough now
+    expect(push(0, 200).some((e) => e!.type === "end")).toBe(true);
   });
 });

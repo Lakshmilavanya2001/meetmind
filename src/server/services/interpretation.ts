@@ -13,7 +13,21 @@ import { getTranscriptMeeting, pushRoomState } from "./transcripts";
 
 type Ctx = Pick<AuthContext, "userId" | "organizationId" | "orgRole"> & { user: { displayName: string } };
 
-const NAMES: Record<string, string> = { ...INDIC_NAMES, en: "English", es: "Español (Spanish)" };
+const NAMES: Record<string, string> = {
+  ...INDIC_NAMES,
+  en: "English",
+  hi: "हिन्दी (Hindi)",
+  es: "Español (Spanish)",
+  fr: "Français (French)",
+  de: "Deutsch (German)",
+  it: "Italiano (Italian)",
+  pt: "Português (Portuguese)",
+  zh: "中文 (Chinese)",
+  ja: "日本語 (Japanese)",
+  ko: "한국어 (Korean)",
+  ar: "العربية (Arabic)",
+  vi: "Tiếng Việt (Vietnamese)",
+};
 export const interpreterLanguages = () => interpreterLanguageCodes().map((code) => ({ code, name: NAMES[code] ?? code, voice: !!getTtsProvider() }));
 /** Which engines the interpreter uses (shown to users; Indic models need attribution). */
 export const interpreterEngines = () => ({ indic: !!readIndicConfig().asr });

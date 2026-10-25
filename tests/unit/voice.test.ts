@@ -6,6 +6,19 @@ describe("wake phrase", () => {
   it("recognises 'Hey Mind' and common misrecognitions, and returns the command", () => {
     expect(stripWakePhrase("Hey Mind, add Rahul to this call.")).toEqual({ woke: true, command: "add Rahul to this call." });
     expect(stripWakePhrase("hey mine who is in this meeting")).toMatchObject({ woke: true, command: "who is in this meeting" });
+    // Parakeet's Hindi output joins the words, as "हेमाइंड" or "हिमाइंड" ("hi mind").
+    expect(stripWakePhrase("हेमाइंड इस कॉल में कौन कौन है?")).toEqual({ woke: true, command: "इस कॉल में कौन कौन है?" });
+    expect(stripWakePhrase("हिमाइंड इस कॉल में कौन कौन है?")).toEqual({ woke: true, command: "इस कॉल में कौन कौन है?" });
+    expect(stripWakePhrase("हिमालय की यात्रा अगले महीने है")).toMatchObject({ woke: false }); // "Himalaya" isn't the wake phrase
+    // "Hey" dropped by the recogniser: a punctuated "Mind" at the start still counts; without punctuation it doesn't.
+    expect(stripWakePhrase("माइ। माइंड! इस कॉल में कौन कौन है?")).toEqual({ woke: true, command: "इस कॉल में कौन कौन है?" });
+    expect(stripWakePhrase("माइंड, मीटिंग कब है?")).toEqual({ woke: true, command: "मीटिंग कब है?" });
+    expect(stripWakePhrase("माइंड इस बात का ध्यान रखना")).toMatchObject({ woke: false });
+    expect(stripWakePhrase("मेरा माइंड बदल गया।")).toMatchObject({ woke: false });
+    // Parakeet's usual mishearings of "हे" before "माइंड".
+    for (const t of ["पेमाइंड इस कॉल में कौन कौन है?", "पाइमाइंड इस कॉल में कौन कौन है?", "फेमाइंड इस कॉल में कौन कौन है?", "पे माइंड, इस कॉल में कौन कौन है?"])
+      expect(stripWakePhrase(t), t).toEqual({ woke: true, command: "इस कॉल में कौन कौन है?" });
+    expect(stripWakePhrase("पेमेंट हो गया है।")).toMatchObject({ woke: false }); // "payment" isn't it
     expect(stripWakePhrase("Okay meet mind schedule a call")).toMatchObject({ woke: true, command: "schedule a call" });
     expect(stripWakePhrase("हे माइंड, राहुल को जोड़ो")).toMatchObject({ woke: true, command: "राहुल को जोड़ो" });
     expect(stripWakePhrase("Hey Mind")).toEqual({ woke: true, command: "" });
@@ -50,4 +63,3 @@ describe("commands in every Indian script", () => {
     expect(classifyYesNo("హలో")).toBeNull();
   });
 });
-

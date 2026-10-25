@@ -10,6 +10,8 @@ import { decideAction, runAgentTurn, type AgentEvent } from "../ai/agent";
 import { getAccessibleMeeting } from "./meetings";
 import { classifyYesNo, stripWakePhrase } from "@/lib/voice-commands";
 import { indicCovers, indicTranslate, readIndicConfig } from "../providers/indic";
+import { magpieCovers, readMagpieConfig } from "../providers/magpie";
+import { translateText } from "./translation";
 import { interpreterLanguageCodes } from "../interpreter/constants";
 
 type Ctx = Pick<AuthContext, "userId" | "organizationId" | "orgRole" | "user">;
@@ -41,19 +43,22 @@ export type VoiceReply = {
 
 /** App-written text (confirmation summaries, fixed phrases) in the speaker's language. Falls back to English. */
 async function inLanguage(text: string, language: string) {
-  if (language === "en" || !text || !readIndicConfig().translate || !indicCovers(language)) return text;
-  try {
-    const [t] = await indicTranslate([text], language);
-    return t || text;
-  } catch {
-    return text;
+  if (language === "en" || !text) return text;
+  if (readIndicConfig().translate && indicCovers(language)) {
+    try {
+      const [t] = await indicTranslate([text], language);
+      if (t) return t;
+    } catch {
+      /* fall through to the LLM */
+    }
   }
+  return translateText(text, language);
 }
 
 async function speak(text: string, language: string, stream = false): Promise<VoiceReply["speech"]> {
   const spoken = toSpeech(text);
   // Streamed by the browser: the reply goes back at once instead of after the whole audio is generated.
-  if (stream && readIndicConfig().tts && indicCovers(language)) return { text: spoken, language, stream: true };
+  if (stream && ((readMagpieConfig() && magpieCovers(language)) || (readIndicConfig().tts && indicCovers(language)))) return { text: spoken, language, stream: true };
   try {
     const out = await getTtsProvider()?.synthesize(spoken, { language });
     if (out) return { text: spoken, language, audioBase64: out.audio.toString("base64"), mimeType: out.mimeType };

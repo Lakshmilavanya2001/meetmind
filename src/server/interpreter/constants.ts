@@ -7,14 +7,17 @@ export const ASSISTANT_STATE_TOPIC = "assistant-state";
 /** Safety cap: translation resumes after this long even if the browser never says it's done. */
 export const ASSISTANT_MAX_MS = 60_000;
 export const interpreterTrackName = (language: string) => `interpreter-${language}`;
-import { INDIC_LANGS, readIndicConfig } from "../providers/indic";
-
-/** Always available: English and Spanish (Riva) and Hindi (Riva, or IndicConformer when connected). */
-export const BASE_INTERPRETER_LANGUAGES = ["en", "hi", "es"] as const;
+/**
+ * Languages people can speak and hear in calls: the 12 that both NVIDIA Parakeet (speech recognition)
+ * and Magpie (voice) support. The Indic models are no longer used for calls (2026-10-24).
+ */
+export const CALL_LANGUAGES = ["en", "hi", "es", "fr", "de", "it", "pt", "zh", "ja", "ko", "ar", "vi"] as const;
+/** @deprecated kept for older imports */
+export const BASE_INTERPRETER_LANGUAGES = CALL_LANGUAGES;
 /** Every language the interpreter could support (for validation). */
-export const ALL_INTERPRETER_LANGUAGES = [...new Set([...BASE_INTERPRETER_LANGUAGES, ...INDIC_LANGS])];
-/** Languages available now: the 22 Indic languages join when IndicConformer is configured. */
-export const interpreterLanguageCodes = (): string[] => (readIndicConfig().asr ? ["en", ...INDIC_LANGS, "es"] : [...BASE_INTERPRETER_LANGUAGES]);
+export const ALL_INTERPRETER_LANGUAGES: string[] = [...CALL_LANGUAGES];
+/** Languages available in calls now. */
+export const interpreterLanguageCodes = (): string[] => [...CALL_LANGUAGES];
 /** @deprecated use interpreterLanguageCodes() */
-export const INTERPRETER_LANGUAGES = BASE_INTERPRETER_LANGUAGES;
+export const INTERPRETER_LANGUAGES = CALL_LANGUAGES;
 export type InterpreterLanguage = string;

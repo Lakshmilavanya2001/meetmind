@@ -49,12 +49,17 @@ export function useInterpreter(meetingRef: string) {
   const [agentPresent, setAgentPresent] = useState(() => room.remoteParticipants.has(INTERPRETER_IDENTITY));
 
   useEffect(() => {
+    // Someone joining after the interpreter gets it in the room's join response, with no "participant
+    // connected" event, so presence is re-checked on connect/reconnect and track events too, and every 2 s.
+    // (Without this the panel said "The interpreter is joining the call…" for the whole call.)
     const check = () => setAgentPresent(room.remoteParticipants.has(INTERPRETER_IDENTITY));
-    room.on(RoomEvent.ParticipantConnected, check);
-    room.on(RoomEvent.ParticipantDisconnected, check);
+    const events = [RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected, RoomEvent.Connected, RoomEvent.Reconnected, RoomEvent.TrackSubscribed, RoomEvent.TrackPublished] as const;
+    check();
+    for (const e of events) room.on(e, check);
+    const t = setInterval(check, 2000);
     return () => {
-      room.off(RoomEvent.ParticipantConnected, check);
-      room.off(RoomEvent.ParticipantDisconnected, check);
+      for (const e of events) room.off(e, check);
+      clearInterval(t);
     };
   }, [room]);
 
@@ -81,6 +86,7 @@ export function useInterpreter(meetingRef: string) {
   useEffect(() => {
     const onData = (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
       if (topic !== TOPIC || participant?.identity !== INTERPRETER_IDENTITY) return;
+      setAgentPresent(true); // a message from the interpreter proves it's here
       let m: { type: string; [k: string]: unknown };
       try {
         m = JSON.parse(decoder.decode(payload));
@@ -112,6 +118,14 @@ export function useInterpreter(meetingRef: string) {
       }
       const theirs = roster.languages[p.identity];
       const translated = enabled && !!theirs && theirs !== myLanguage && roster.voices.includes(myLanguage);
+      // "Muted": don't receive their original voice at all. Turning the volume down isn't enough: some
+      // browsers (iPhone Safari) ignore page volume, and the original would play under the translation.
+      const mute = translated && originalVolume === 0;
+      for (const pub of p.audioTrackPublications.values()) {
+        if (pub.source !== Track.Source.Microphone) continue;
+        const remote = pub as RemoteTrackPublication;
+        if (remote.isDesired === mute) remote.setSubscribed(!mute);
+      }
       p.setVolume(translated ? originalVolume : 1, Track.Source.Microphone);
     }
   }, [room, enabled, myLanguage, roster, originalVolume]);

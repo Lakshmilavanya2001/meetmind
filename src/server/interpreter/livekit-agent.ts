@@ -21,16 +21,26 @@ import type { RivaConfig } from "../providers/stt";
 import { parseWav, resampleInt16, toMono } from "./audio";
 import { interpretUtterance, type InterpreterMessage, type InterpreterOutput } from "./pipeline";
 import { RivaStream } from "./riva-stream";
-import { segmenterOptions, UtteranceSegmenter } from "./segmenter";
+import { segmenterOptions, UtteranceSegmenter, WAKE_PAUSE_MS } from "./segmenter";
 
 import { ASSISTANT_MAX_MS, ASSISTANT_STATE_TOPIC, INTERPRETER_IDENTITY, INTERPRETER_NAME, INTERPRETER_TOPIC, interpreterLanguageCodes, interpreterTrackName } from "./constants";
 import { indicAsrSupports, indicCovers, readIndicConfig } from "../providers/indic";
 import { IndicAsrStream } from "./indic-asr-stream";
 import { stripWakePhrase } from "../../lib/voice-commands";
 
+const ROSTER_REPEAT_MS = 5_000;
 type Utt = { text: string; language: string; speechStartAt: number; speechEndAt: number; resultAt: number; commitAt?: number };
-/** Longest we hold a sentence waiting for the assistant's verdict before translating it anyway. */
-const WAKE_HOLD_MS = 3000;
+/** Longest we hold a sentence waiting for the assistant's verdict before translating it anyway. The verdict usually
+ * comes in 1–2 s (and releases the sentence at once); under load the browser's check can take longer, and a
+ * command translated to the other callers is worse than a short delay. */
+const WAKE_HOLD_MS = 6000;
+/** Speech starting this soon after a "Hey Mind" line ends is the rest of that command. */
+const WAKE_CONTINUES_MS = 1500;
+/** A command reported by the browser covers speech up to this long before the report (its clips are ≤ 15 s). */
+const COMMAND_LOOKBACK_MS = 15_000;
+/** While the browser is still checking a clip, held lines keep waiting, up to this long in total. */
+const CHECK_MAX_MS = 15_000;
+type Held = { u: Utt; heldAt: number; timer: ReturnType<typeof setTimeout> };
 /** Until a caller's browser reports its "Hey Mind" state, hold their first sentences for this long after we start hearing them. */
 const UNKNOWN_STATE_MS = 8000;
 import { IndicTtsStream, TTS_RATE } from "./indic-tts-stream";
@@ -112,7 +122,13 @@ class LanguageVoice {
 class SpeakerSession {
   private riva: RivaStream | null = null;
   private indic: IndicAsrStream | null = null;
-  private segmenter = new UtteranceSegmenter(segmenterOptions());
+  // Starts with the longer "Hey Mind" pause until the caller's browser has said whether it's listening.
+  private segmenter = new UtteranceSegmenter({ ...segmenterOptions(), endSilenceMs: Math.max(segmenterOptions().endSilenceMs, WAKE_PAUSE_MS) });
+
+  /** How much silence ends a sentence for this speaker. */
+  setPause(ms: number) {
+    if (this.segmenter.endSilenceMs !== ms) this.segmenter.setEndSilence(ms);
+  }
   private speechStartAt = 0;
   private stopped = false;
 
@@ -189,8 +205,15 @@ export class MeetingInterpreter {
   /** Whose browser has told us its "Hey Mind" state, and when we started hearing each person. */
   private stateKnown = new Set<string>();
   private heardSince = new Map<string, number>();
-  private held = new Map<string, { u: Utt; timer: ReturnType<typeof setTimeout> }[]>();
+  /** Until when a person's speech still continues their last "Hey Mind" command (wall clock). */
+  private wokeUntil = new Map<string, number>();
+  /** When each person's browser started checking a clip for "Hey Mind" (cleared by its verdict). */
+  private checkingSince = new Map<string, number>();
+  /** When each person's browser said "that was a command" (recent ones). */
+  private commandsAt = new Map<string, number[]>();
+  private held = new Map<string, Held[]>();
   private lastRoster = "";
+  private lastRosterAt = 0;
   private startedAt: Date | null = null;
   /** False once LiveKit drops us (e.g. the same identity joined elsewhere); the supervisor rejoins. */
   connected = false;
@@ -219,7 +242,7 @@ export class MeetingInterpreter {
     // assistant, and when they start and stop talking to it.
     this.room.on(RoomEvent.DataReceived, (payload: Uint8Array, p?: RemoteParticipant, _kind?: unknown, topic?: string) => {
       if (topic !== ASSISTANT_STATE_TOPIC || !p) return;
-      let m: { active?: boolean; wake?: boolean; verdict?: "assistant" | "call" };
+      let m: { active?: boolean; wake?: boolean; verdict?: "assistant" | "call"; checking?: boolean };
       try {
         m = JSON.parse(new TextDecoder().decode(payload));
       } catch {
@@ -227,11 +250,18 @@ export class MeetingInterpreter {
       }
       const id = p.identity;
       if (DEBUG && (m.verdict || m.active !== undefined || (m.wake !== undefined && !this.stateKnown.has(id)))) console.log(`[interpreter] ${id} says ${JSON.stringify(m)}; holding ${this.held.get(id)?.length ?? 0}`);
+      if (m.checking) this.checkingSince.set(id, Date.now());
+      if (m.verdict) this.checkingSince.delete(id);
       if (typeof m.wake === "boolean") this.stateKnown.add(id);
       if (m.wake === true) this.wakeListening.add(id);
       if (m.wake === false) {
         this.wakeListening.delete(id);
         this.release(id, true);
+      }
+      this.speakers.get(id)?.setPause(this.pauseFor(id));
+      if (m.verdict === "assistant") {
+        const now = Date.now();
+        this.commandsAt.set(id, [...(this.commandsAt.get(id) ?? []).filter((t) => now - t < ASSISTANT_MAX_MS), now]);
       }
       if (m.verdict) this.release(id, m.verdict === "call");
       if (m.active === true || m.verdict === "assistant") this.withAssistant.set(id, Date.now());
@@ -295,6 +325,7 @@ export class MeetingInterpreter {
       current?.stop();
       if (!this.heardSince.has(identity)) this.heardSince.set(identity, Date.now());
       const session = new SpeakerSession(identity, track, person.language, this.cfg.riva, (u) => void this.onUtterance(identity, u));
+      session.setPause(this.pauseFor(identity));
       this.speakers.set(identity, session);
       void session.run();
     }
@@ -315,10 +346,13 @@ export class MeetingInterpreter {
       this.voices.delete(lang);
     }
 
-    // Tell clients who speaks what (for muting other-language voices) and which voices exist.
+    // Tell clients who speaks what (for muting other-language voices) and which voices exist. Sent on every
+    // change and repeated every few seconds: a browser that missed it (reload, reconnect) would otherwise
+    // never mute the other speakers' original voices.
     const roster = JSON.stringify({ languages: Object.fromEntries(langs), voices: [...this.voices.keys()].sort() });
-    if (roster !== this.lastRoster) {
+    if (roster !== this.lastRoster || Date.now() - this.lastRosterAt > ROSTER_REPEAT_MS) {
       this.lastRoster = roster;
+      this.lastRosterAt = Date.now();
       this.send({ type: "roster", ...JSON.parse(roster) });
     }
   }
@@ -330,14 +364,28 @@ export class MeetingInterpreter {
     // "Hey Mind …" and the conversation that follows are for the assistant: don't translate them to the call.
     const since = this.withAssistant.get(identity);
     if (since && Date.now() - since < ASSISTANT_MAX_MS) return;
-    if (stripWakePhrase(u.text).woke) return;
+    // Recognition can split "Hey Mind, who is in this call?" into two results. What follows the wake phrase
+    // without a real pause (it starts within WAKE_CONTINUES_MS of the previous part ending) is the same
+    // command, so it isn't translated either.
+    // The browser said a command ended around time T: whatever this person said in the COMMAND_LOOKBACK_MS
+    // before T was that command, however it was recognised here ("पेमाइंड", or "Hey Mind" missed entirely)
+    // and even if this result arrives after the verdict.
+    if ((this.commandsAt.get(identity) ?? []).some((t) => u.speechEndAt <= t + 500 && u.speechStartAt >= t - COMMAND_LOOKBACK_MS)) return;
+    const continues = this.wokeUntil.get(identity);
+    if (stripWakePhrase(u.text).woke || (continues && u.speechStartAt <= continues)) {
+      this.wokeUntil.set(identity, u.speechEndAt + WAKE_CONTINUES_MS);
+      return;
+    }
     // Recognition can clip "Hey Mind" off the start, so for someone listening for it, wait (briefly) for
     // their browser's assistant to say whether this was a command before translating it.
     const unknownYet = !this.stateKnown.has(identity) && Date.now() - (this.heardSince.get(identity) ?? 0) < UNKNOWN_STATE_MS;
+    // Every line waits: live recognition can miss "Hey Mind" entirely ("who is in this call?"), and only the
+    // browser's check of the whole clip catches that. (Holding only lines that look like a command was tried
+    // on 2026-10-25 and let such commands through to the other callers.)
     if (this.wakeListening.has(identity) || unknownYet) {
       if (DEBUG) console.log(`[interpreter] ${identity} holding "${u.text.slice(0, 30)}" (${unknownYet ? "state unknown" : "Hey Mind on"})`);
       const list = this.held.get(identity) ?? [];
-      const item = { u, timer: setTimeout(() => this.release(identity, true, item), WAKE_HOLD_MS) };
+      const item: Held = { u, heldAt: Date.now(), timer: setTimeout(() => this.holdExpired(identity, item), WAKE_HOLD_MS) };
       list.push(item);
       this.held.set(identity, list);
       return;
@@ -345,8 +393,28 @@ export class MeetingInterpreter {
     await this.translate(identity, u);
   }
 
+  /**
+   * The pause that ends a sentence for this person: short (faster translation) unless they may be talking to
+   * the assistant, where a short pause splits "Hey Mind, …" commands and lets pieces through.
+   */
+  private pauseFor(identity: string) {
+    const normal = segmenterOptions().endSilenceMs;
+    return this.wakeListening.has(identity) || !this.stateKnown.has(identity) ? Math.max(normal, WAKE_PAUSE_MS) : normal;
+  }
+
+  /** A held line's wait is over: keep waiting if the browser is still checking a clip (slow recognition), else translate. */
+  private holdExpired(identity: string, item: Held) {
+    const checking = this.checkingSince.get(identity);
+    const now = Date.now();
+    if (checking && now - checking < CHECK_MAX_MS && now - item.heldAt < CHECK_MAX_MS) {
+      item.timer = setTimeout(() => this.holdExpired(identity, item), 500);
+      return;
+    }
+    this.release(identity, true, item);
+  }
+
   /** Translate (or drop) what a person said while we waited for the assistant's verdict. */
-  private release(identity: string, translate: boolean, only?: { u: Utt; timer: ReturnType<typeof setTimeout> }) {
+  private release(identity: string, translate: boolean, only?: Held) {
     const list = this.held.get(identity) ?? [];
     const take = only ? list.filter((x) => x === only) : list;
     this.held.set(identity, only ? list.filter((x) => x !== only) : []);

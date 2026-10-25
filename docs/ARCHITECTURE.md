@@ -202,6 +202,46 @@ The call and its lobby are styled as a phone call, not a video-meeting grid (the
 - **Speech output.** Qwen3-TTS: a voice is designed once from `TTS_VOICE_DESCRIPTION`, cached, and cloned for every reply, so the assistant always sounds the same. Qwen3-TTS has no Hindi, so Hindi replies (and any TTS failure) use the browser's own speech synthesis.
 - **Transcription disclosure.** When the host turns transcription on, everyone in the call hears a spoken notice, as on phone networks, besides the banner.
 
+## Call speech: NVIDIA Parakeet + Magpie (since 2026-10-24)
+
+Calls (interpreter, live transcription, the in-call assistant, spoken replies) use two NVIDIA models in the same **12 languages**: English, Hindi, Spanish, French, German, Italian, Portuguese, Chinese, Japanese, Korean, Arabic, Vietnamese (`CALL_LANGUAGES` in `src/server/interpreter/constants.ts`).
+
+- **Speech recognition: Parakeet** (`nemotron-asr-streaming`, multilingual cache-aware Parakeet, Riva realtime API at `RIVA_REALTIME_URL`). It supports about 40 languages and Hindi, but no other Indian language. `RIVA_LANG` in `src/server/providers/stt.ts` maps the call languages to its locales (Arabic is `ar-AR`).
+- **Voice: Magpie TTS Multilingual** (NIM 1.10, `MAGPIE_TTS_URL`, `src/server/providers/magpie.ts`). `POST /audio/synthesize` returns a WAV (a 20 s reply in about 1.3 s); `POST /audio/synthesize_online` streams raw PCM (first audio in about 0.05 s). One voice per language: Louise, or Sofia for Arabic (`MAGPIE_VOICE` overrides). Sample rates 16000/22050/44100/48000 (24000 is rejected); a single response is capped at about 4 MB, so replies are spoken a sentence at a time. Text must be in the language's own script.
+- **Fallbacks:** Qwen3-TTS, then the browser's voice. Translation (interpreter lines, the assistant's fixed spoken phrases via `translateText`) is done by Qwen.
+- **Indic models: off.** The IndicConformer / indic-translate / indic-speak code stays and is used again only if `INDIC_*_URL` are set; the call language list stays at 12 either way. The supervisor starts the Indic tunnel only when those settings are present.
+- **Wake phrase:** Parakeet writes "Hey Mind" in Hindi as one word, "हेमाइंड" or "हिमाइंड"; both are recognised.
+- **Measured** (single test sentences): Hindi → French 1.4 s end to end (recognition 1.0 s, translation 0.3 s, voice 0.1 s); English → Hindi 2.3 s; Hindi → English 3.0 s. With the Indic models Hindi → English was 1.6 s, mainly because IndicConformer recognised Hindi faster (0.6 s).
+
+## Interpreted calls: muting, whole sentences, recovering sessions (2026-10-25)
+
+Three problems from a real call (`kof-yrmi-znu`: English and Hindi, transcription and interpreter on), and their fixes:
+
+- **Hearing the original voice under the translation.** Browsers mute other-language speakers using the interpreter's *roster* (who speaks what, which voices exist). It used to be sent only when it changed, so a browser that missed it (reload, reconnect) never muted anyone. The interpreter now repeats it every 5 s (`ROSTER_REPEAT_MS`). With original voices on **Muted** (the default) the browser now **unsubscribes** from those speakers' microphone tracks instead of only setting volume 0, which some browsers (iPhone Safari) ignore. "Quiet" and "Full volume" still use volume.
+- **Overlapping, choppy translation and transcript (fixed 2026-10-25, second call `auy-dnyx-mrb`).** Parakeet often sends **several results for one pause** (one per sentence it detects), answers late when the server is struggling, and doesn't answer a pause that held only noise. Matching results to pauses one-to-one gave lines wrong times (out of order, guessed zero-length spans) and glued pieces to the wrong sentence, so text appeared twice or overlapped. Now (`src/server/interpreter/riva-stream.ts`) **every result is placed by its word timestamps**: the stream records when each 100 ms of audio was sent (a session clock that also counts the padding), so each word maps back to when it was spoken. Each result is its own line at its real time, and words for audio already covered (`doneUntilMs`) are dropped, so the same speech can't appear twice. Pauses only drive the nudge and the watchdog.
+- **Idle sessions.** While a speaker is muted no audio reaches Riva and the server drops the session (the "START flag" error). The stream sends 1 s of silence every few seconds while no audio flows (`KEEPALIVE_MS`).
+- **"Hey Mind" split in two.** Since results are now separate lines, "Hey Mind" and the rest of the command can arrive as two lines. Speech that starts within 1.5 s of a "Hey Mind" line ending is the same command and isn't translated (`WAKE_CONTINUES_MS`). A punctuated "माइंड!" at the start also counts (Parakeet can drop "Hey"). Sentences from someone with "Hey Mind" on wait up to 6 s (was 3 s, `WAKE_HOLD_MS`) for their browser's verdict; it usually comes in 1–2 s, but under load a command could otherwise be translated to the other callers.
+- **Transcription stopping mid-call.** While the interpreter is on it transcribes everyone (browsers don't upload, to avoid storing speech twice). In that call Riva's sessions broke ("must specify the START flag", "Internal error from Core") and the interpreter kept sending into the dead session, so all lines stopped. A Riva error now reopens the session at once; a watchdog also reopens it when 3 pauses in a row get no answer for 20 s (`WATCHDOG_MS`).
+- **"The interpreter is joining the call…" for the whole call.** Browsers decided the interpreter was present only from "participant connected" events. Someone joining a call the interpreter was already in gets it in LiveKit's join response, with no such event, so their panel never showed the live lines. Presence is now re-checked on connect/reconnect and track events, every 2 s, and whenever a message from the interpreter arrives (`use-interpreter.ts`).
+- Covered by `tests/unit/riva-stream.test.ts` and `e2e/interpreter-muting.spec.ts` (which now also checks the panel shows live lines, not "joining", after the listener reloads) (an 8-sentence English monologue to a Hindi listener: only the translation is received, also after a reload; 8 sentences → 8 lines).
+
+## Interpreter latency work (2026-10-25)
+
+Measured with an 8-sentence English monologue to a Hindi listener (two runs each; the voice queue alone varies 0.3–1.9 s between runs, so compare the parts):
+
+| | Recognition | "Hey Mind" hold | Total |
+|---|---|---|---|
+| Before, "Hey Mind" off | 1.47 s | 0 | 3.55 s |
+| Before, "Hey Mind" on | 1.51 s | 0.60 s (2.6 s in a real call) | 3.6–4.5 s |
+| After, "Hey Mind" off | **1.31 s** | 0 | **2.9–3.4 s** |
+| After, "Hey Mind" on | 1.47 s | 0.61 s | 3.7–3.9 s |
+
+- **Shorter end-of-sentence pause, per speaker.** 600 ms (was 800) for speakers *not* listening for "Hey Mind": 0.2 s faster, still one line per sentence. Speakers listening for "Hey Mind" (and anyone before their browser reports its state) keep 800 ms (`WAKE_PAUSE_MS`): at 600 ms "Hey Mind, …?" was cut into pieces and pieces reached the other callers. `INTERPRETER_PAUSE_MS` still sets the normal pause.
+- **Tried and reverted: holding only lines that look like a command.** Live recognition can miss "Hey Mind" entirely ("इस कॉल में कौन कौन है?"), and only the browser's check of the whole clip catches that, so every line from someone listening for "Hey Mind" still waits for that check.
+- **Safer holds** (found while testing): the browser now tells the interpreter when it starts checking a clip (`checking`), and held lines wait for that check to finish (up to 15 s) instead of a fixed 6 s, so slow recognition can't let a command through. A command reported by the browser also covers anything the speaker said in the 15 s before it (`COMMAND_LOOKBACK_MS`), even when the interpreter's own result arrives after the verdict. Parakeet's usual mishearings of Hindi "Hey Mind" ("पेमाइंड", "पाइमाइंड", "फेमाइंड") are accepted; "पेमेंट" (payment) is not.
+- **Remaining levers** (not done): translate and voice a held line while waiting for the verdict (most of the hold would overlap); a shorter voice queue when sentences come back to back; a faster translation model; Parakeet server health (slow results and dropped sessions).
+- The "Hey Mind in Hindi" browser test now uses a clip with 12 s of silence before the command and 30 s after, so the looping fake microphone can't present a half-heard repeat (correctly translated as ordinary speech) during the test. Passed 8/8 (with the other "Hey Mind" interpreter test), and the full suite 22/22.
+
 ## Spoken replies: streamed, sentence by sentence
 
 Speech is generated at roughly real time, so waiting for a whole reply's audio made long answers start 10–20 s late. Replies are now spoken as they're produced.
@@ -316,6 +356,7 @@ Real-time voice translation for app-to-app calls ([src/server/interpreter/](../s
    - A voice-activity detector finds the end of each sentence: an 800 ms pause by default (`INTERPRETER_PAUSE_MS`), with a noise floor taken from the quietest 200 ms of the last 5 s.
    - Audio streams to a long-lived **Riva realtime** session per speaker, in 100 ms messages. 10 ms frames made Riva about 4× slower.
    - At each pause it sends 1 s of silence plus a commit, which makes the streaming model finalise the sentence, about 0.5 s later. If nothing returns within 0.9 s, it repeats once.
+   - **Matching results to pauses.** Each result is matched to the oldest unanswered pause. A pause containing only noise (a cough, a click) gets **no** result from Riva, so pauses left unanswered for more than 2.5 s (`STALE_COMMIT_MS`) are dropped when the next result arrives, and an empty result still answers its pause. Before this fix (2026-10-24), each noise pause shifted every later English line onto an older pause's time: lines landed among earlier lines (looking like repeats), and measured latency grew to minutes (one real call averaged 21 s English→Malayalam and 102 s English→Urdu, against about 2 s for Indian languages, whose recogniser timestamps each sentence itself). Covered by `tests/unit/riva-stream.test.ts`.
 3. **Translating and speaking.** Each sentence:
    - is saved as a `TranscriptSegment`, so transcripts, summaries, captions and search all just work;
    - is translated into every other language present, using a fast plain-text single-line call (about 0.5 s, cached in `SegmentTranslation`, so captions reuse it);

@@ -27,12 +27,20 @@ export function toDevanagari(text: string): string {
 // Latin: "Hey Mind". Recognisers also write "hey mine", "hey meet mind", "hi mind", "okay mind".
 const WAKE_LATIN = /^\s*(?:hey|hi|hay|okay|ok|hello)[\s,!.]*(?:meet\s*mind|mind|mine|mined|minds)\b[\s,!.:?-]*/i;
 // Devanagari (and every script mapped onto it): हे/हाय/ओके + (मीट) + माइंड/मैंड/मैण्ट/मैनड/माइन्ड…
+// Parakeet often hears Hindi "हे" before "माइंड" as "पे", "पाइ" or "फे" ("पेमाइंड", "पाइमाइंड"); none is a word.
+// Those forms need the full "माइंड" sound, so "पेमेंट" (payment) doesn't count.
+const WAKE_INDIC_PAY = /^\s*(?:पे|पै|पाइ|पाई|फे|फै|फाइ)्?[\s,।!.]*मा(?:इ|ई)ं?न?्?ड्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;
 // Recognisers sometimes clip the first syllable ("హే" → "య్", "టే", "्"), so a short fragment made only
 // of the sounds in "hey" is accepted in its place. Real words before "mind" ("నా మైండ్…", my mind) aren't.
-const WAKE_INDIC = /^\s*(?:(?:हे|है|हाय|हेय|हॆ|हॆय|हाइ|ओके|ओकॆ|हलो|हेलो)्?|[हयटेैाइ्]{1,3})[\s,।!.]*(?:मीट\s*)?म(?:ा|ै|ाइ|ाई|ॆ|े)?(?:ं|ँ|न्?|ण्?)(?:ड|ट|द)्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;
+const WAKE_INDIC = /^\s*(?:(?:हे|है|हाय|हेय|हॆ|हॆय|हाइ|हाई|हि|ओके|ओकॆ|हलो|हेलो)्?|[हयटेैाइि्]{1,3})[\s,।!.]*(?:मीट\s*)?म(?:ा|ै|ाइ|ाई|ॆ|े)?(?:ं|ँ|न्?|ण्?)(?:ड|ट|द)्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;
+
+// Parakeet can drop "Hey" altogether and write just "Mind", punctuated, at the very start ("माइंड! …",
+// or stuttered "माइ। माइंड! …"). Accepted only with the punctuation, so "माइंड इस…" or "मेरा माइंड" isn't.
+const WAKE_INDIC_BARE = /^\s*(?:मा(?:इ|ई)[\s,।!.]+)?मा(?:इ|ई)ं?(?:न्)?ड्?[,।!.]+\s*/;
 
 export function stripWakePhrase(text: string): { woke: boolean; command: string } {
-  const m = WAKE_LATIN.exec(text) ?? WAKE_INDIC.exec(toDevanagari(text));
+  const dev = toDevanagari(text);
+  const m = WAKE_LATIN.exec(text) ?? WAKE_INDIC.exec(dev) ?? WAKE_INDIC_PAY.exec(dev) ?? WAKE_INDIC_BARE.exec(dev);
   return m ? { woke: true, command: text.slice(m[0].length).trim() } : { woke: false, command: text.trim() };
 }
 

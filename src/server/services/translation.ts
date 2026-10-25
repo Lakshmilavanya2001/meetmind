@@ -172,6 +172,32 @@ export async function getCaptions(ctx: Ctx, ref: string, raw: unknown) {
   };
 }
 
+/** Short app text (a prompt like "Say yes to confirm") into `target`, via the LLM. Cached in memory; falls back to the original. */
+const textCache = new Map<string, string>();
+export async function translateText(text: string, target: string): Promise<string> {
+  if (!text.trim() || target === "en" || !isLlmConfigured()) return text;
+  const key = `${target}\u0000${text}`;
+  const hit = textCache.get(key);
+  if (hit) return hit;
+  try {
+    const res = await getLlmProvider().complete({
+      temperature: 0,
+      maxTokens: 100 + text.length * 3,
+      messages: [
+        { role: "system", content: `Translate the user's text into ${languageName(target)}, in its native script, as natural spoken language. Keep names, numbers, dates and times. Reply with the translation only.` },
+        { role: "user", content: text },
+      ],
+    });
+    const out = res.content.trim().replace(/^["“]|["”]$/g, "");
+    if (!out || out.length > text.length * 4 + 80) return text;
+    if (textCache.size > 500) textCache.clear();
+    textCache.set(key, out);
+    return out;
+  } catch {
+    return text;
+  }
+}
+
 /**
  * Fast path for the live interpreter: one line, plain-text output (≈0.5 s faster than the JSON batch
  * format). Same safety rules; runaway output is rejected. Cached like captions, so they reuse it.

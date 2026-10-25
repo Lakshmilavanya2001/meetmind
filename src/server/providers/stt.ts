@@ -66,7 +66,21 @@ export function readRivaConfig(env: Record<string, string | undefined> = process
   return { url: env.RIVA_REALTIME_URL, model: env.RIVA_ASR_MODEL || "cache-aware-parakeet-rnnt-multi-asr-streaming-sortformer", apiKey: env.RIVA_API_KEY };
 }
 
-export const RIVA_LANG: Record<string, string> = { en: "en-US", hi: "hi-IN", es: "es-ES" };
+/** App language → Parakeet locale (the multilingual model also has ~30 more; these are the call languages). */
+export const RIVA_LANG: Record<string, string> = {
+  en: "en-US",
+  hi: "hi-IN",
+  es: "es-ES",
+  fr: "fr-FR",
+  de: "de-DE",
+  it: "it-IT",
+  pt: "pt-BR",
+  zh: "zh-CN",
+  ja: "ja-JP",
+  ko: "ko-KR",
+  ar: "ar-AR",
+  vi: "vi-VN",
+};
 
 /** Extract 16 kHz mono 16-bit PCM from a WAV file (the format the browser uploads). */
 export function wavToPcm16(wav: Buffer): Buffer {

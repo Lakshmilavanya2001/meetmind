@@ -137,7 +137,7 @@ export function VoiceAssistant({ meetingRef, conversationId, onConversation }: {
   // translated and spoken to everyone else: whether I'm listening for "Hey Mind", whether each thing
   // I said was for the assistant, and when I'm in a conversation with it.
   const tellInterpreter = useCallback(
-    (m: { wake?: boolean; verdict?: "assistant" | "call"; active?: boolean }) => {
+    (m: { wake?: boolean; verdict?: "assistant" | "call"; active?: boolean; checking?: boolean }) => {
       // Use the room's current participant at send time (a reference kept from an earlier render can
       // belong to a connection that has since been replaced).
       if (room.state !== "connected") return;
@@ -182,6 +182,9 @@ export function VoiceAssistant({ meetingRef, conversationId, onConversation }: {
         if (mode === "confirm" && pendingRef.current) form.append("actionId", pendingRef.current.actionId);
         const ctrl = new AbortController();
         inflight.current = ctrl;
+        // The interpreter holds what this person says until the verdict; tell it a check is under way so it
+        // waits for the answer however long recognition takes, instead of translating after a fixed time.
+        if (mode === "wake") tellInterpreter({ checking: true });
         const res = await fetch("/api/voice/utterance", { method: "POST", body: form, signal: ctrl.signal, headers: { accept: "application/x-ndjson" } });
         if (!res.ok || !res.body) {
           const data = await res.json().catch(() => null);

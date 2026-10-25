@@ -1,5 +1,6 @@
 import "server-only";
 import { createIndicTtsProvider, readIndicConfig } from "./indic";
+import { createMagpieTtsProvider, readMagpieConfig } from "./magpie";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { getObject, putObject } from "../storage";
@@ -90,24 +91,28 @@ export function getTtsProvider(): TtsProvider | null {
   if (instance === undefined) {
     const c = readTtsConfig();
     const qwen = c ? createQwenTtsProvider(c) : null;
+    // Magpie (NVIDIA, 12 languages, much faster than real time) is the main voice; Qwen3-TTS is the fallback.
+    const magpie = readMagpieConfig();
+    const general = magpie ? byLanguage(createMagpieTtsProvider(magpie), qwen, "Magpie") : qwen;
+    // Indic Speak (22 Indian languages) is only used when INDIC_TTS_URL is set; it's off by default now.
     const indicBase = readIndicConfig().tts;
-    // Indic Speak covers English and 22 Indic languages with studio voices; Qwen handles the rest.
-    instance = indicBase ? byLanguage(createIndicTtsProvider(indicBase), qwen) : qwen;
+    instance = indicBase ? byLanguage(createIndicTtsProvider(indicBase), general) : general;
   }
   return instance;
 }
 
-function byLanguage(indic: TtsProvider, other: TtsProvider | null): TtsProvider {
+/** `first` for the languages it covers (falling back to `other` on errors), `other` for the rest. */
+function byLanguage(first: TtsProvider, other: TtsProvider | null, name = "Indic"): TtsProvider {
   return {
-    languages: [...new Set([...indic.languages, ...(other?.languages ?? [])])],
+    languages: [...new Set([...first.languages, ...(other?.languages ?? [])])],
     async synthesize(text, opts) {
       const lang = opts.language.split("-")[0];
-      if (indic.languages.includes(lang)) {
+      if (first.languages.includes(lang)) {
         try {
-          const r = await indic.synthesize(text, opts);
+          const r = await first.synthesize(text, opts);
           if (r) return r;
         } catch (err) {
-          console.warn("[tts] Indic TTS failed:", (err as Error).message);
+          console.warn(`[tts] ${name} TTS failed:`, (err as Error).message);
         }
       }
       return other ? other.synthesize(text, opts) : null;
