@@ -21,6 +21,9 @@ import type { RivaConfig } from "../providers/stt";
 import { parseWav, resampleInt16, toMono } from "./audio";
 import { interpretUtterance, type InterpreterMessage, type InterpreterOutput } from "./pipeline";
 import { RivaStream } from "./riva-stream";
+import { catchUpRate, timeStretch } from "./time-stretch";
+import { magpieCovers, readMagpieConfig, streamMagpieSpeech } from "../providers/magpie";
+import { prepareTranslation } from "../services/translation";
 import { segmenterOptions, UtteranceSegmenter, WAKE_PAUSE_MS } from "./segmenter";
 
 import { ASSISTANT_MAX_MS, ASSISTANT_STATE_TOPIC, INTERPRETER_IDENTITY, INTERPRETER_NAME, INTERPRETER_TOPIC, interpreterLanguageCodes, interpreterTrackName } from "./constants";
@@ -40,7 +43,8 @@ const WAKE_CONTINUES_MS = 1500;
 const COMMAND_LOOKBACK_MS = 15_000;
 /** While the browser is still checking a clip, held lines keep waiting, up to this long in total. */
 const CHECK_MAX_MS = 15_000;
-type Held = { u: Utt; heldAt: number; timer: ReturnType<typeof setTimeout> };
+/** A sentence waiting for the "Hey Mind" verdict, with its translations already being made (used only if it isn't a command). */
+type Held = { u: Utt; heldAt: number; timer: ReturnType<typeof setTimeout>; prepared: Map<string, Promise<string | null>> };
 /** Until a caller's browser reports its "Hey Mind" state, hold their first sentences for this long after we start hearing them. */
 const UNKNOWN_STATE_MS = 8000;
 import { IndicTtsStream, TTS_RATE } from "./indic-tts-stream";
@@ -91,31 +95,141 @@ class LanguageVoice {
     this.indic?.close();
   }
 
-  async speak(text: string) {
+  /**
+   * Speak `text` on this language's track. Audio starts being made at once (Magpie streams it; other voices
+   * make a whole file), but playback keeps the order of the calls, so a sentence spoken clause by clause plays
+   * in order even if a later clause is ready first. Resolves when this text starts playing.
+   */
+  speak(text: string): Promise<{ ttsMs: number; queueMs: number; playAt: number } | null> {
     if (this.indic) return this.indic.speak(text);
-    const tts = getTtsProvider();
-    if (!tts) return null;
     const t0 = Date.now();
-    const out = await tts.synthesize(text, { language: this.language });
-    if (!out) return null;
-    const ttsMs = Date.now() - t0;
-    const wav = parseWav(out.audio);
-    const pcm = resampleInt16(toMono(wav.samples, wav.channels), wav.sampleRate, OUT_RATE);
-    const queuedAt = Date.now();
-    // Synthesis runs in parallel; playback is strictly one line after another.
-    return new Promise<{ ttsMs: number; queueMs: number; playAt: number }>((resolve) => {
-      this.chain = this.chain.then(async () => {
-        const playAt = Date.now();
-        resolve({ ttsMs, queueMs: playAt - queuedAt, playAt });
-        for (let i = 0; i < pcm.length; i += FRAME) {
-          const chunk = new Int16Array(FRAME);
-          chunk.set(pcm.subarray(i, i + FRAME));
-          await this.source.captureFrame(new AudioFrame(chunk, OUT_RATE, 1, FRAME));
-        }
-        await this.source.waitForPlayout();
-      }).catch((err) => console.error("[interpreter] playback failed", (err as Error).message));
+    let readyAt = 0;
+    const audio = this.makeAudio(text).then((a) => {
+      readyAt = Date.now();
+      return a;
+    });
+    return new Promise((resolve) => {
+      this.chain = this.chain
+        .then(async () => {
+          const a = await audio;
+          if (!a) return resolve(null);
+          const playAt = Date.now();
+          const waited = Math.max(0, playAt - readyAt);
+          resolve({ ttsMs: readyAt - t0, queueMs: waited, playAt });
+          // Behind (this waited for the previous sentence to finish)? Speak a little faster to catch up.
+          const rate = catchUpRate(waited);
+          let source: AsyncIterable<Int16Array> = a;
+          if (rate > 1) {
+            const parts: Int16Array[] = [];
+            for await (const pcm of a) parts.push(pcm);
+            const whole = new Int16Array(parts.reduce((n, p) => n + p.length, 0));
+            let at = 0;
+            for (const p of parts) {
+              whole.set(p, at);
+              at += p.length;
+            }
+            const fast = timeStretch(whole, rate, OUT_RATE);
+            source = (async function* () {
+              yield fast;
+            })();
+          }
+          let rest = new Int16Array(0);
+          for await (const pcm of source) {
+            const all = new Int16Array(rest.length + pcm.length);
+            all.set(rest);
+            all.set(pcm, rest.length);
+            const whole = all.length - (all.length % FRAME);
+            for (let i = 0; i < whole; i += FRAME) await this.source.captureFrame(new AudioFrame(all.slice(i, i + FRAME), OUT_RATE, 1, FRAME));
+            rest = all.slice(whole);
+          }
+          if (rest.length) {
+            const last = new Int16Array(FRAME);
+            last.set(rest);
+            await this.source.captureFrame(new AudioFrame(last, OUT_RATE, 1, FRAME));
+          }
+          await this.source.waitForPlayout();
+        })
+        .catch((err) => {
+          console.error("[interpreter] playback failed", (err as Error).message);
+          resolve(null);
+        });
     });
   }
+
+  /** The audio for `text` as 16-bit PCM at OUT_RATE: streamed from Magpie when it covers the language, else a whole file. */
+  private async makeAudio(text: string): Promise<AsyncIterable<Int16Array> | null> {
+    if (readMagpieConfig() && magpieCovers(this.language)) {
+      const stream = await streamMagpieSpeech(text, this.language, { sampleRate: OUT_RATE }).catch((err) => {
+        console.warn("[interpreter] streamed voice failed, using the whole-file voice:", (err as Error).message);
+        return null;
+      });
+      if (stream) return readAhead(stream);
+    }
+    const tts = getTtsProvider();
+    const out = tts ? await tts.synthesize(text, { language: this.language }).catch(() => null) : null;
+    if (!out) return null;
+    const wav = parseWav(out.audio);
+    const pcm = resampleInt16(toMono(wav.samples, wav.channels), wav.sampleRate, OUT_RATE);
+    return (async function* () {
+      yield pcm;
+    })();
+  }
+}
+
+/**
+ * Read a byte stream to the end straight away (so a clause waiting its turn doesn't hold the voice server's
+ * connection open) while handing out 16-bit samples as they arrive.
+ */
+function readAhead(stream: ReadableStream<Uint8Array>): AsyncIterable<Int16Array> {
+  const chunks: Int16Array[] = [];
+  let done = false;
+  let failed: unknown = null;
+  const waiting: { wake: (() => void) | null } = { wake: null };
+  void (async () => {
+    const reader = stream.getReader();
+    let odd: number | null = null;
+    try {
+      for (;;) {
+        const { value, done: end } = await reader.read();
+        if (end) break;
+        let bytes = value;
+        if (odd !== null) {
+          const joined = new Uint8Array(bytes.length + 1);
+          joined[0] = odd;
+          joined.set(bytes, 1);
+          bytes = joined;
+          odd = null;
+        }
+        if (bytes.length % 2) {
+          odd = bytes[bytes.length - 1];
+          bytes = bytes.subarray(0, bytes.length - 1);
+        }
+        if (bytes.length) chunks.push(new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length)));
+        waiting.wake?.();
+      }
+    } catch (err) {
+      failed = err;
+    } finally {
+      done = true;
+      waiting.wake?.();
+    }
+  })();
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (;;) {
+        if (chunks.length) {
+          yield chunks.shift()!;
+          continue;
+        }
+        if (done) {
+          if (failed) console.warn("[interpreter] voice stream ended early:", (failed as Error).message);
+          return;
+        }
+        await new Promise<void>((r) => (waiting.wake = r));
+        waiting.wake = null;
+      }
+    },
+  };
 }
 
 /** Listens to one consenting speaker: voice detection → streaming recognition → interpretation. */
@@ -385,7 +499,7 @@ export class MeetingInterpreter {
     if (this.wakeListening.has(identity) || unknownYet) {
       if (DEBUG) console.log(`[interpreter] ${identity} holding "${u.text.slice(0, 30)}" (${unknownYet ? "state unknown" : "Hey Mind on"})`);
       const list = this.held.get(identity) ?? [];
-      const item: Held = { u, heldAt: Date.now(), timer: setTimeout(() => this.holdExpired(identity, item), WAKE_HOLD_MS) };
+      const item: Held = { u, heldAt: Date.now(), timer: setTimeout(() => this.holdExpired(identity, item), WAKE_HOLD_MS), prepared: this.prepare(identity, u) };
       list.push(item);
       this.held.set(identity, list);
       return;
@@ -421,20 +535,35 @@ export class MeetingInterpreter {
     if (DEBUG && take.length) console.log(`[interpreter] ${identity} ${translate ? "translating" : "dropping"} ${take.length} held${only ? " (timeout)" : ""}`);
     for (const x of take) {
       clearTimeout(x.timer);
-      if (translate) void this.translate(identity, x.u);
+      if (translate) void this.translate(identity, x.u, x.prepared);
     }
   }
 
-  private async translate(identity: string, u: Utt) {
+  /** Languages this person's speech goes to: everyone else's in the call. */
+  private targetsFor(identity: string) {
+    return [...new Set([...this.presentLanguages().entries()].filter(([id]) => id !== identity).map(([, l]) => l))];
+  }
+
+  /**
+   * While a sentence waits for the "Hey Mind" verdict, translate it already (nothing is shown, stored or
+   * played), so when it turns out to be ordinary speech the listeners' voices can start at once.
+   */
+  private prepare(identity: string, u: Utt) {
+    const prepared = new Map<string, Promise<string | null>>();
+    for (const lang of this.targetsFor(identity)) if (lang !== u.language) prepared.set(lang, prepareTranslation(u.text, u.language, lang));
+    return prepared;
+  }
+
+  private async translate(identity: string, u: Utt, prepared?: Map<string, Promise<string | null>>) {
     const person = this.people.get(identity);
     if (!person?.consent) return;
-    const targets = [...new Set([...this.presentLanguages().entries()].filter(([id]) => id !== identity).map(([, l]) => l))];
+    const targets = this.targetsFor(identity);
     const out: InterpreterOutput = {
       speak: async (language, text) => this.voices.get(language)?.speak(text) ?? null,
       send: (msg) => this.send(msg),
     };
     try {
-      await interpretUtterance({ meeting: { id: this.meeting.id, startedAt: this.startedAt }, speaker: { userId: identity, label: person.label }, utt: u, targetLanguages: targets, out });
+      await interpretUtterance({ meeting: { id: this.meeting.id, startedAt: this.startedAt }, speaker: { userId: identity, label: person.label }, utt: u, targetLanguages: targets, out, prepared });
     } catch (err) {
       console.error("[interpreter] utterance failed", (err as Error).message);
     }

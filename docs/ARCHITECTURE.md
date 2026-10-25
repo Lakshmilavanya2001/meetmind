@@ -225,6 +225,24 @@ Three problems from a real call (`kof-yrmi-znu`: English and Hindi, transcriptio
 - **"The interpreter is joining the call…" for the whole call.** Browsers decided the interpreter was present only from "participant connected" events. Someone joining a call the interpreter was already in gets it in LiveKit's join response, with no such event, so their panel never showed the live lines. Presence is now re-checked on connect/reconnect and track events, every 2 s, and whenever a message from the interpreter arrives (`use-interpreter.ts`).
 - Covered by `tests/unit/riva-stream.test.ts` and `e2e/interpreter-muting.spec.ts` (which now also checks the panel shows live lines, not "joining", after the listener reloads) (an 8-sentence English monologue to a Hindi listener: only the translation is received, also after a reload; 8 sentences → 8 lines).
 
+## Interpreter latency, round 2 (2026-10-25, after the colleague's playbook)
+
+Same 8-sentence test (English monologue → Hindi listener), two runs each:
+
+| | Recognition | Translation | Voice | Queue | "Hey Mind" hold | Total |
+|---|---|---|---|---|---|---|
+| Before, "Hey Mind" off | 1.3 s | 0.58 s | 0.27 s | 0.7–1.3 s | – | 2.9–3.4 s |
+| **Now, "Hey Mind" off** | 1.3 s | 0.50 s | **0.05 s** | **~0.5 s** | – | **2.3–2.5 s** |
+| Before, "Hey Mind" on | 1.5 s | 0.58 s | 0.27 s | 0.8–0.9 s | 0.6 s | 3.7–3.9 s |
+| **Now, "Hey Mind" on** | 1.5 s | **0.02 s** | **0.05 s** | 0.3–0.7 s | 0.6 s | **2.5–2.9 s** |
+
+- **Magpie streamed in the interpreter** (`LanguageVoice.speak` → `streamMagpieSpeech` at 48 kHz): first audio 0.05 s instead of a whole file in 0.27 s. Each call reserves its place in the language's playback queue at once, so clauses play in order even if a later one is ready first; the audio is read ahead into memory so a waiting clause doesn't hold the connection.
+- **Translation streamed, voiced clause by clause** (`translateLineStreaming`, `splitSpokenPieces`): each sentence (or a comma clause of 24+ characters) is shown in captions and voiced as soon as Qwen has written it. Gains most on long sentences with several clauses.
+- **Translation prepared during the "Hey Mind" check** (`prepareTranslation`): nothing is shown, stored or played until the browser says the line wasn't a command; then the voice starts at once.
+- **Catch-up speed** (`time-stretch.ts`, WSOLA): a sentence that had to wait for the previous one plays at 1.2× (waited > 1 s) or 1.3× (> 2.5 s), pitch unchanged. Magpie ignores SSML speaking rates (measured), so it's done on the audio.
+- **Measured but not useful:** Parakeet's finishing time (~0.62 s) doesn't depend on the padding sent before the commit (0–1000 ms); the server sends no provisional text during speech; committing mid-sentence can get no answer at all (words lost), so it isn't used. The server is streaming-only (offline requests are rejected).
+- **Remaining, on the GPU servers:** Parakeet offline (~0.6 s), a small translation model (~0.3 s), Parakeet's health. Written up for the server owner in [LATENCY-SERVER-REQUEST.md](LATENCY-SERVER-REQUEST.md).
+
 ## Interpreter latency work (2026-10-25)
 
 Measured with an 8-sentence English monologue to a Hindi listener (two runs each; the voice queue alone varies 0.3–1.9 s between runs, so compare the parts):

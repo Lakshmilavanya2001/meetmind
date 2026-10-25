@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "../db";
-import { translateLine } from "../services/translation";
+import { saveLineTranslation, translateLineStreaming } from "../services/translation";
 
 /** What the interpreter tells clients over the call's data channel (topic "interpreter"). */
 export type InterpreterMessage =
@@ -23,12 +23,14 @@ export type Speaker = { userId: string; label: string };
 export type MeetingRef = { id: string; startedAt: Date | null };
 
 /**
- * One finished utterance → transcript line, then for every other language in the call:
- * translate (cached, shared with captions) → speak on that language's track → record latency.
+ * One finished utterance → transcript line, then for every other language in the call, all at once:
+ * translate (streamed; each clause is shown and voiced as soon as it's written) → speak on that language's
+ * track (clauses play in order) → record latency. `prepared` holds translations made while a "Hey Mind" check
+ * was under way; they're used as they are.
  * End-to-end latency is measured from the moment the speaker stopped talking to the moment the
  * translated speech starts playing into the call.
  */
-export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Speaker; utt: Utterance; targetLanguages: string[]; out: InterpreterOutput }) {
+export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Speaker; utt: Utterance; targetLanguages: string[]; out: InterpreterOutput; prepared?: Map<string, Promise<string | null>> }) {
   const { meeting, speaker, utt, out } = o;
   const transcript = await db.meetingTranscript.upsert({ where: { meetingId: meeting.id }, update: {}, create: { meetingId: meeting.id, status: "PROCESSING" } });
   const base = (meeting.startedAt ?? new Date(utt.speechStartAt)).getTime();
@@ -53,14 +55,33 @@ export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Spea
   await Promise.all(
     targets.map(async (language) => {
       const t0 = Date.now();
-      const translated = await translateLine({ id: segment.id, text: utt.text, language: utt.language }, language);
-      const mtMs = Date.now() - t0;
+      // Filled in by speakPiece (a callback), hence an object rather than plain variables.
+      const st: { firstPieceAt: number | null; first: Promise<{ ttsMs: number; queueMs: number; playAt: number } | null> | null; shown: string } = { firstPieceAt: null, first: null, shown: "" };
+      const speakPiece = (piece: string) => {
+        st.firstPieceAt ??= Date.now();
+        st.shown = st.shown ? `${st.shown} ${piece}` : piece;
+        out.send({ type: "translation", id: segment.id, language, text: st.shown });
+        const spoken = out.speak(language, piece).catch((err) => {
+          console.error("[interpreter] speech failed", (err as Error).message);
+          return null;
+        });
+        st.first ??= spoken;
+      };
+      const ready = o.prepared?.get(language);
+      let translated: string | null;
+      if (ready) {
+        translated = await ready;
+        if (translated) {
+          await saveLineTranslation(segment.id, language, translated);
+          speakPiece(translated);
+        }
+      } else {
+        translated = await translateLineStreaming({ id: segment.id, text: utt.text, language: utt.language }, language, speakPiece);
+      }
+      const mtMs = (st.firstPieceAt ?? Date.now()) - t0;
       if (!translated) return; // translation failed: captions show the original
-      out.send({ type: "translation", id: segment.id, language, text: translated });
-      const spoken = await out.speak(language, translated).catch((err) => {
-        console.error("[interpreter] speech failed", (err as Error).message);
-        return null;
-      });
+      if (st.shown !== translated) out.send({ type: "translation", id: segment.id, language, text: translated });
+      const spoken = st.first ? await st.first : null;
       const ttsMs = spoken?.ttsMs ?? 0;
       const queueMs = spoken?.queueMs ?? 0;
       const totalMs = (spoken?.playAt ?? Date.now()) - utt.speechEndAt;
