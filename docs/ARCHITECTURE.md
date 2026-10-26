@@ -236,6 +236,24 @@ Translation used to start only when the speaker paused (a whole sentence). Now i
 - **Transcript:** lines are phrase-sized.
 - `INTERPRETER_MODE=sentence` turns it off (600 ms pause, whole sentences); `INTERPRETER_PAUSE_MS` overrides the phrase pause.
 
+## Offline recognition for English (2026-10-26)
+
+The streaming Parakeet server returns a sentence's text only 0.8–1.1 s after the commit (measured from a client on
+another host, 2026-10-26), and it can't run offline. The Granite server (`STT_*`) is offline: one request per
+utterance, answered in 0.15–0.3 s. So for the languages in `INTERPRETER_OFFLINE_ASR_LANGUAGES` (`en`), the
+interpreter's own voice detector cuts each utterance and sends the whole of it to Granite
+(`src/server/interpreter/offline-asr.ts`): the last ~30 s of each speaker's audio is kept with its arrival time, and an
+utterance is cut out from 300 ms before speech started to 200 ms after it ended. Requests run one at a time per
+speaker, so lines keep their order.
+
+- **Measured** (meetmind's test clips, 0.6 s pause, from the moment the speaker stops): English text at 0.80–0.83 s
+  instead of 1.35–1.43 s; the first translated audio at 1.6 s instead of 2.15 s for a short sentence. Hindi is
+  unchanged: Granite writes Hindi as garbled Latin text, so it stays on Parakeet.
+- **Trade-offs:** Granite writes lowercase without punctuation. Qwen puts the punctuation back in its translation, but
+  lowercase can cost a little ("hi team" became "है टीम" rather than "हाय टीम"). A line Granite fails on is logged and
+  not retried on Parakeet.
+- Covered by `tests/unit/offline-asr.test.ts`.
+
 ## Interpreter latency, round 2 (2026-10-25, after the colleague's playbook)
 
 Same 8-sentence test (English monologue → Hindi listener), two runs each:

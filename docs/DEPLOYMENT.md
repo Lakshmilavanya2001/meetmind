@@ -106,7 +106,8 @@ scripts/meetmind-services.sh stop
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | optional | Real SMS for reminders and phone verification. Without them, SMS is off and reminders stay in-app |
 | `EMAIL_DEV_OUTBOX` | **development only** | `true` records emails (e.g. call summaries) in Settings → Messages instead of sending them |
 | `SMS_VERIFY_STARTS_PER_10MIN` | optional | Verification codes per user per 10 minutes (default 3) |
-| `INTERPRETER_PAUSE_MS` | optional | AI interpreter: the pause that ends a sentence (default 800 ms; lower is faster but may split sentences) |
+| `INTERPRETER_PAUSE_MS` | optional | AI interpreter: the pause that ends a sentence. Leave unset: phrase mode cuts at 250 ms breaths, sentence mode at 600 ms. Any value also replaces the 250 ms phrase pause |
+| `INTERPRETER_OFFLINE_ASR_LANGUAGES` | optional | AI interpreter: languages recognised offline with the `STT_*` server (Granite), one request per utterance, text ~0.2 s after the pause instead of 0.8–1.1 s from the streaming Riva server. `en` (Granite doesn't recognise Hindi); empty: off |
 | `SMS_ALLOWED_PREFIXES`, `SMS_DAILY_LIMIT_PER_USER`, `SMS_DAILY_LIMIT` | optional | Countries that can be texted (default `+91`) and daily caps (defaults 20 per user, 2000 total) |
 | `SMS_DEV_OUTBOX` | **development only** | `true` records texts, including verification codes, in the app instead of sending them. Never set it in production |
 | `RIVA_API_KEY`, `TTS_API_KEY` | optional | Bearer tokens for the Riva and TTS endpoints, if they need one |
