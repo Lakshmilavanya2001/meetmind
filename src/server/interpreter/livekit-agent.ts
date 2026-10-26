@@ -19,12 +19,12 @@ import { db } from "../db";
 import { getTtsProvider } from "../providers/tts";
 import type { RivaConfig } from "../providers/stt";
 import { parseWav, resampleInt16, toMono } from "./audio";
-import { interpretUtterance, type InterpreterMessage, type InterpreterOutput } from "./pipeline";
+import { isStale, interpretUtterance, type InterpreterMessage, type InterpreterOutput } from "./pipeline";
 import { RivaStream } from "./riva-stream";
 import { catchUpRate, timeStretch } from "./time-stretch";
 import { magpieCovers, readMagpieConfig, streamMagpieSpeech } from "../providers/magpie";
-import { prepareTranslation } from "../services/translation";
-import { segmenterOptions, UtteranceSegmenter, WAKE_PAUSE_MS } from "./segmenter";
+import { prepareTranslation, type PhraseContext } from "../services/translation";
+import { PHRASE_MAX_MS, PHRASE_PAUSE_MS, phraseMode, segmenterOptions, UtteranceSegmenter, WAKE_PAUSE_MS } from "./segmenter";
 
 import { ASSISTANT_MAX_MS, ASSISTANT_STATE_TOPIC, INTERPRETER_IDENTITY, INTERPRETER_NAME, INTERPRETER_TOPIC, interpreterLanguageCodes, interpreterTrackName } from "./constants";
 import { indicAsrSupports, indicCovers, readIndicConfig } from "../providers/indic";
@@ -41,6 +41,9 @@ const WAKE_HOLD_MS = 6000;
 const WAKE_CONTINUES_MS = 1500;
 /** A command reported by the browser covers speech up to this long before the report (its clips are ≤ 15 s). */
 const COMMAND_LOOKBACK_MS = 15_000;
+/** A phrase continues the speaker's previous ones if it starts within this long of them; up to this many are given. */
+const CONTEXT_GAP_MS = 4000;
+const CONTEXT_PHRASES = 3;
 /** While the browser is still checking a clip, held lines keep waiting, up to this long in total. */
 const CHECK_MAX_MS = 15_000;
 /** A sentence waiting for the "Hey Mind" verdict, with its translations already being made (used only if it isn't a command). */
@@ -239,9 +242,10 @@ class SpeakerSession {
   // Starts with the longer "Hey Mind" pause until the caller's browser has said whether it's listening.
   private segmenter = new UtteranceSegmenter({ ...segmenterOptions(), endSilenceMs: Math.max(segmenterOptions().endSilenceMs, WAKE_PAUSE_MS) });
 
-  /** How much silence ends a sentence for this speaker. */
-  setPause(ms: number) {
-    if (this.segmenter.endSilenceMs !== ms) this.segmenter.setEndSilence(ms);
+  /** How much silence ends a phrase for this speaker, and (0 = off) when long speech is cut at a dip. */
+  setPause(p: { pauseMs: number; phraseMs: number }) {
+    if (this.segmenter.endSilenceMs !== p.pauseMs) this.segmenter.setEndSilence(p.pauseMs);
+    this.segmenter.setPhraseMs(p.phraseMs);
   }
   private speechStartAt = 0;
   private stopped = false;
@@ -321,6 +325,10 @@ export class MeetingInterpreter {
   private heardSince = new Map<string, number>();
   /** Until when a person's speech still continues their last "Hey Mind" command (wall clock). */
   private wokeUntil = new Map<string, number>();
+  /** Interpretation on (translate and speak), or transcription only. */
+  private interpreting = false;
+  /** Each speaker's last phrases (phrase-by-phrase mode), with their translations, for the next phrase's context. */
+  private recent = new Map<string, { text: string; endAt: number; translations: Map<string, string> }[]>();
   /** When each person's browser started checking a clip for "Hey Mind" (cleared by its verdict). */
   private checkingSince = new Map<string, number>();
   /** When each person's browser said "that was a command" (recent ones). */
@@ -364,7 +372,8 @@ export class MeetingInterpreter {
       }
       const id = p.identity;
       if (DEBUG && (m.verdict || m.active !== undefined || (m.wake !== undefined && !this.stateKnown.has(id)))) console.log(`[interpreter] ${id} says ${JSON.stringify(m)}; holding ${this.held.get(id)?.length ?? 0}`);
-      if (m.checking) this.checkingSince.set(id, Date.now());
+      if (m.checking === true) this.checkingSince.set(id, Date.now());
+      if (m.checking === false) this.checkingSince.delete(id);
       if (m.verdict) this.checkingSince.delete(id);
       if (typeof m.wake === "boolean") this.stateKnown.add(id);
       if (m.wake === true) this.wakeListening.add(id);
@@ -413,10 +422,11 @@ export class MeetingInterpreter {
   async refresh() {
     const m = await db.meeting.findUnique({
       where: { id: this.meeting.id },
-      select: { startedAt: true, participants: { where: { removedAt: null }, select: { userId: true, callLanguage: true, transcriptionConsentAt: true, user: { select: { displayName: true, preferredLanguage: true } } } } },
+      select: { startedAt: true, interpretationEnabled: true, participants: { where: { removedAt: null }, select: { userId: true, callLanguage: true, transcriptionConsentAt: true, user: { select: { displayName: true, preferredLanguage: true } } } } },
     });
     if (!m) return;
     this.startedAt = m.startedAt;
+    this.interpreting = m.interpretationEnabled;
     this.people = new Map(
       m.participants.map((p) => {
         const lang = p.callLanguage ?? p.user.preferredLanguage;
@@ -445,7 +455,8 @@ export class MeetingInterpreter {
     }
 
     // One voice per language, needed only when more than one language is present.
-    const needed = distinct.size > 1 ? distinct : new Set<string>();
+    // Voices only when interpreting (transcription alone needs none).
+    const needed = this.interpreting && distinct.size > 1 ? distinct : new Set<string>();
     for (const lang of needed) {
       if (this.voices.has(lang)) continue;
       const voice = new LanguageVoice(lang);
@@ -511,9 +522,11 @@ export class MeetingInterpreter {
    * The pause that ends a sentence for this person: short (faster translation) unless they may be talking to
    * the assistant, where a short pause splits "Hey Mind, …" commands and lets pieces through.
    */
-  private pauseFor(identity: string) {
-    const normal = segmenterOptions().endSilenceMs;
-    return this.wakeListening.has(identity) || !this.stateKnown.has(identity) ? Math.max(normal, WAKE_PAUSE_MS) : normal;
+  private pauseFor(identity: string): { pauseMs: number; phraseMs: number } {
+    if (this.wakeListening.has(identity) || !this.stateKnown.has(identity)) return { pauseMs: Math.max(segmenterOptions().endSilenceMs, WAKE_PAUSE_MS), phraseMs: 0 };
+    // Phrase by phrase: translation starts at each short breath, not only when the speaker stops.
+    if (phraseMode()) return { pauseMs: process.env.INTERPRETER_PAUSE_MS ? segmenterOptions().endSilenceMs : PHRASE_PAUSE_MS, phraseMs: PHRASE_MAX_MS };
+    return { pauseMs: segmenterOptions().endSilenceMs, phraseMs: 0 };
   }
 
   /** A held line's wait is over: keep waiting if the browser is still checking a clip (slow recognition), else translate. */
@@ -541,6 +554,7 @@ export class MeetingInterpreter {
 
   /** Languages this person's speech goes to: everyone else's in the call. */
   private targetsFor(identity: string) {
+    if (!this.interpreting) return []; // transcription only: no translation, no voice
     return [...new Set([...this.presentLanguages().entries()].filter(([id]) => id !== identity).map(([, l]) => l))];
   }
 
@@ -557,13 +571,34 @@ export class MeetingInterpreter {
   private async translate(identity: string, u: Utt, prepared?: Map<string, Promise<string | null>>) {
     const person = this.people.get(identity);
     if (!person?.consent) return;
-    const targets = this.targetsFor(identity);
+    // Too old to voice (a stalled recogniser catching up): transcript only, no translation or voice.
+    const stale = isStale(u);
+    if (stale) console.warn(`[interpreter] ${identity}: recognised ${Math.round((u.resultAt - u.speechEndAt) / 1000)} s late (${Math.round((u.speechEndAt - u.speechStartAt) / 1000)} s of speech): transcript only, not voiced`);
+    const targets = stale ? [] : this.targetsFor(identity);
     const out: InterpreterOutput = {
       speak: async (language, text) => this.voices.get(language)?.speak(text) ?? null,
       send: (msg) => this.send(msg),
     };
     try {
-      await interpretUtterance({ meeting: { id: this.meeting.id, startedAt: this.startedAt }, speaker: { userId: identity, label: person.label }, utt: u, targetLanguages: targets, out, prepared });
+      // The phrases this speaker said in the last few seconds: the new one continues them.
+      const before = (this.recent.get(identity) ?? []).filter((r) => u.speechStartAt - r.endAt < CONTEXT_GAP_MS).slice(-CONTEXT_PHRASES);
+      const context = new Map<string, PhraseContext>();
+      for (const lang of targets) {
+        const withIt = before.filter((r) => r.translations.has(lang));
+        if (withIt.length) context.set(lang, { source: withIt.map((r) => r.text).join(" "), translated: withIt.map((r) => r.translations.get(lang)).join(" ") });
+      }
+      const mine = { text: u.text, endAt: u.speechEndAt, translations: new Map<string, string>() };
+      this.recent.set(identity, [...before, mine].slice(-CONTEXT_PHRASES));
+      await interpretUtterance({
+        meeting: { id: this.meeting.id, startedAt: this.startedAt },
+        speaker: { userId: identity, label: person.label },
+        utt: u,
+        targetLanguages: targets,
+        out,
+        prepared,
+        context: context.size ? context : undefined,
+        onTranslated: (lang, text) => mine.translations.set(lang, text),
+      });
     } catch (err) {
       console.error("[interpreter] utterance failed", (err as Error).message);
     }

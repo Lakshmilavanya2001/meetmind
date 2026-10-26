@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KEEPALIVE_MS, RivaStream, WATCHDOG_MS } from "@/server/interpreter/riva-stream";
+import { KEEPALIVE_MS, LATE_RESULT_MS, RivaStream, WATCHDOG_MS } from "@/server/interpreter/riva-stream";
 
 type Word = { word: string; start_time: number; end_time: number };
 
@@ -162,5 +162,16 @@ describe("RivaStream: placing Parakeet's results", () => {
     expect(audioSent()).toBe(0);
     await vi.advanceTimersByTimeAsync(KEEPALIVE_MS + 1500);
     expect(audioSent()).toBeGreaterThan(0);
+  });
+
+  it("reopens a session whose results come in far behind the speech", async () => {
+    const { s, errors } = await open();
+    await speak(s, LATE_RESULT_MS + 4000);
+    s.commit(0, 0);
+    const before = FakeSocket.opened;
+    FakeSocket.last.reply("Old words.", [["Old", 300, 600], ["words.", 700, 1200]]); // spoken ~13 s ago
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(errors.join(" ")).toMatch(/late \(reopening/);
+    expect(FakeSocket.opened).toBe(before + 1);
   });
 });

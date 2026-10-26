@@ -307,10 +307,10 @@ export async function handleCallingEvent(provider: "LIVEKIT" | "MICROSOFT_TEAMS"
   switch (event.type) {
     case "participant_joined": {
       // Tokens live for minutes; a removed person (or anyone, once the meeting ended) is kicked on arrival.
-      // The AI interpreter may stay only while interpretation is on in a live meeting.
+      // The server agent (interpreter) may stay only while interpretation or live transcription is on in a live meeting.
       if (event.identity === INTERPRETER_IDENTITY) {
-        const m = await db.meeting.findUnique({ where: { id: meeting.id }, select: { interpretationEnabled: true } });
-        if (meeting.status !== "LIVE" || !m?.interpretationEnabled) await getCallingProvider(provider).removeParticipant(event.roomId, event.identity).catch(() => {});
+        const m = await db.meeting.findUnique({ where: { id: meeting.id }, select: { interpretationEnabled: true, transcriptionEnabled: true } });
+        if (meeting.status !== "LIVE" || !(m?.interpretationEnabled || m?.transcriptionEnabled)) await getCallingProvider(provider).removeParticipant(event.roomId, event.identity).catch(() => {});
         break;
       }
       const row = await db.meetingParticipant.findUnique({ where: { meetingId_userId: { meetingId: meeting.id, userId: event.identity } } });

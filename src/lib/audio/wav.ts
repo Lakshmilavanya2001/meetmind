@@ -72,6 +72,8 @@ export class SpeechChunker {
   constructor(
     private emit: (c: SpeechChunk) => void,
     private opts = { minMs: 3000, maxMs: 20_000, pauseMs: 800, frameMs: 100 },
+    /** onStart: someone started speaking; onDrop: what they said was too short to emit (a click, a cough). */
+    private hooks: { onStart?: () => void; onDrop?: () => void } = {},
   ) {}
 
   push(frame: Float32Array, at: number) {
@@ -91,6 +93,7 @@ export class SpeechChunker {
       this.preroll = [];
       this.speechFrames = 1;
       this.trailingSilence = 0;
+      this.hooks.onStart?.();
       return;
     }
     this.frames.push(frame);
@@ -108,7 +111,7 @@ export class SpeechChunker {
     this.frames = [];
     if (frames.length && this.speechFrames >= 3) {
       this.emit({ samples: concat(frames), startedAt: this.startedAt, durationMs: frames.length * this.opts.frameMs });
-    }
+    } else if (frames.length) this.hooks.onDrop?.();
     this.speechFrames = 0;
     this.trailingSilence = 0;
   }

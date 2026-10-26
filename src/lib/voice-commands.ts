@@ -29,7 +29,7 @@ const WAKE_LATIN = /^\s*(?:hey|hi|hay|okay|ok|hello)[\s,!.]*(?:meet\s*mind|mind|
 // Devanagari (and every script mapped onto it): हे/हाय/ओके + (मीट) + माइंड/मैंड/मैण्ट/मैनड/माइन्ड…
 // Parakeet often hears Hindi "हे" before "माइंड" as "पे", "पाइ" or "फे" ("पेमाइंड", "पाइमाइंड"); none is a word.
 // Those forms need the full "माइंड" sound, so "पेमेंट" (payment) doesn't count.
-const WAKE_INDIC_PAY = /^\s*(?:पे|पै|पाइ|पाई|फे|फै|फाइ)्?[\s,।!.]*मा(?:इ|ई)ं?न?्?ड्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;
+const WAKE_INDIC_PAY = /^\s*(?:पे|पै|पाइ|पाई|फे|फै|फाइ|प|फ)्?[\s,।!.]*मा(?:इ|ई)ं?न?्?ड्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;
 // Recognisers sometimes clip the first syllable ("హే" → "య్", "టే", "्"), so a short fragment made only
 // of the sounds in "hey" is accepted in its place. Real words before "mind" ("నా మైండ్…", my mind) aren't.
 const WAKE_INDIC = /^\s*(?:(?:हे|है|हाय|हेय|हॆ|हॆय|हाइ|हाई|हि|ओके|ओकॆ|हलो|हेलो)्?|[हयटेैाइि्]{1,3})[\s,।!.]*(?:मीट\s*)?म(?:ा|ै|ाइ|ाई|ॆ|े)?(?:ं|ँ|न्?|ण्?)(?:ड|ट|द)्?(?=$|[\s,।!.?:-])[\s,।!.?:-]*/;

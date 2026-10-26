@@ -1,5 +1,6 @@
+import { isStale, MAX_LIVE_SPAN_MS, STALE_RESULT_MS } from "@/server/interpreter/pipeline";
 import { describe, expect, it } from "vitest";
-import { UtteranceSegmenter, DEFAULT_SEGMENTER, segmenterOptions, WAKE_PAUSE_MS, type SegmentEvent } from "@/server/interpreter/segmenter";
+import { UtteranceSegmenter, DEFAULT_SEGMENTER, segmenterOptions, WAKE_PAUSE_MS, PHRASE_PAUSE_MS, PHRASE_MAX_MS, type SegmentEvent } from "@/server/interpreter/segmenter";
 import { parseWav, resampleInt16, toMono } from "@/server/interpreter/audio";
 
 const frame = (level: number, ms = 10) => {
@@ -91,5 +92,53 @@ describe("utterance segmenter: per-speaker pause", () => {
     push(0.3, 1000);
     expect(push(0, 700).some((e) => e!.type === "end")).toBe(false); // 700 ms isn't enough now
     expect(push(0, 200).some((e) => e!.type === "end")).toBe(true);
+  });
+});
+
+describe("utterance segmenter: phrase cuts in long speech", () => {
+  const run = (seg: UtteranceSegmenter, pattern: [number, number][]) => {
+    let t = 0;
+    const ends: number[] = [];
+    for (const [level, ms] of pattern)
+      for (let i = 0; i < ms / 10; i++) {
+        const ev = seg.push(new Int16Array(160).fill(Math.round(level * 32767)), (t += 10));
+        if (ev?.type === "end") ends.push(t);
+      }
+    return ends;
+  };
+  // Run-on speech: 600 ms words with 60 ms dips between them, never a real pause.
+  const runOn = Array.from({ length: 12 }, () => [[0.3, 600], [0.004, 60]] as [number, number][]).flat();
+
+  it("cuts run-on speech at a dip between words once a phrase is long enough", () => {
+    const seg = new UtteranceSegmenter({ ...DEFAULT_SEGMENTER, endSilenceMs: 250, phraseMs: 3500 });
+    const ends = run(seg, runOn);
+    expect(ends.length).toBeGreaterThanOrEqual(1);
+    expect(ends[0]).toBeGreaterThanOrEqual(3500);
+    expect(ends[0]).toBeLessThan(4300); // at the first dip after 3.5 s, not later
+  });
+  it("never cuts in the middle of a word", () => {
+    const seg = new UtteranceSegmenter({ ...DEFAULT_SEGMENTER, endSilenceMs: 250, phraseMs: 1000 });
+    expect(run(seg, [[0.3, 6000]])).toEqual([]); // continuous sound: no dip, no cut (until the 15 s hard limit)
+  });
+  it("without phrase cuts, run-on speech stays one utterance", () => {
+    const seg = new UtteranceSegmenter({ ...DEFAULT_SEGMENTER, endSilenceMs: 800 });
+    expect(run(seg, runOn)).toEqual([]);
+  });
+  it("a short breath ends a phrase in phrase mode", () => {
+    const seg = new UtteranceSegmenter({ ...DEFAULT_SEGMENTER, endSilenceMs: PHRASE_PAUSE_MS, phraseMs: PHRASE_MAX_MS });
+    expect(run(seg, [[0.3, 1200], [0.004, 300]])).toHaveLength(1);
+  });
+});
+
+describe("stale speech isn't voiced", () => {
+  const u = (endAgoMs: number, spanMs: number, now = 1_000_000) => ({ text: "x", language: "en", speechStartAt: now - endAgoMs - spanMs, speechEndAt: now - endAgoMs, resultAt: now });
+  it("live phrases are voiced", () => {
+    expect(isStale(u(600, 3000))).toBe(false);
+    expect(isStale(u(STALE_RESULT_MS - 500, 8000))).toBe(false);
+  });
+  it("speech recognised long after it ended, or a huge result, goes to the transcript only", () => {
+    expect(isStale(u(STALE_RESULT_MS + 1000, 3000))).toBe(true);
+    expect(isStale(u(1000, MAX_LIVE_SPAN_MS + 1000))).toBe(true);
+    expect(isStale(u(166_800, 165_000))).toBe(true); // the real case: 3 minutes in one result, 167 s late
   });
 });

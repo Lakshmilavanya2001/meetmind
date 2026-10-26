@@ -190,7 +190,7 @@ Orders and bookings are created only through the assistant (tools `order_food`, 
 | DELETE | `/api/meetings/:ref/interpretation/me` | participants | Stop sending your voice to the interpreter; you still hear others in your language |
 | GET | `/api/meetings/:ref/interpretation/latency` | participants | `{ overall: { count, avgMs, p50Ms, p95Ms, maxMs, avgAsrMs, avgMtMs, avgTtsMs, avgQueueMs }, byPair, recent }` |
 
-In the call, the interpreter publishes one audio track per language (`interpreter-<lang>`) and data messages on topic `interpreter`: `roster`, `line`, `translation` and `latency`.
+In the call, the interpreter publishes one audio track per language (`interpreter-<lang>`) and data messages on topic `interpreter`: `roster`, `line` (`id`, `speakerId`, `speaker`, `language`, `text`, `startMs`), `translation` and `latency`. The agent is in the call whenever transcription or interpretation is on; with transcription only it sends `line` messages and no voice.
 
 ## Webhooks
 | Method | Path | Notes |

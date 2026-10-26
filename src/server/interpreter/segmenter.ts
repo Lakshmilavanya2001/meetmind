@@ -3,7 +3,11 @@
  * The noise floor adapts, so a noisy room doesn't count as speech. An utterance ends after a short
  * pause (or at a hard maximum), which is when the interpreter asks the recogniser to finalise it.
  */
-export type SegmenterOptions = { endSilenceMs: number; minSpeechMs: number; maxUtteranceMs: number; minLevel: number };
+/**
+ * phraseMs (0 = off): in long speech without a pause, end the utterance at the next short dip between words once
+ * it's this long, so translation can start before the speaker stops.
+ */
+export type SegmenterOptions = { endSilenceMs: number; minSpeechMs: number; maxUtteranceMs: number; minLevel: number; phraseMs?: number };
 export type SegmentEvent = { type: "start" } | { type: "end"; speechMs: number; forced: boolean };
 
 // 600 ms: measured 2026-10-25, 0.2 s faster than 800 ms and still one line per sentence (500 ms saves 0.1 s more
@@ -16,6 +20,17 @@ export const segmenterOptions = (env: Record<string, string | undefined> = proce
   ...DEFAULT_SEGMENTER,
   endSilenceMs: Math.min(2000, Math.max(300, Number(env.INTERPRETER_PAUSE_MS) || DEFAULT_SEGMENTER.endSilenceMs)),
 });
+
+/**
+ * Phrase-by-phrase interpretation (default since 2026-10-25; INTERPRETER_MODE=sentence turns it off): a phrase
+ * ends at a short breath (250 ms) or, in run-on speech, at the next dip between words after 3.5 s, so the
+ * translation starts while the speaker is still talking. Measured: every word still recognised at 250 ms breaths;
+ * text for a phrase arrives ~0.1 s after it ends (0.6 s for a whole sentence).
+ */
+export const PHRASE_PAUSE_MS = 250;
+export const PHRASE_MAX_MS = 3500;
+export const phraseMode = (env: Record<string, string | undefined> = process.env) => (env.INTERPRETER_MODE ?? "phrase") !== "sentence";
+const DIP_MS = 40; // quiet this long between words is a safe place to cut
 
 const BLOCK_MS = 200;
 const BLOCKS = 25; // 5 s of history for the noise floor
@@ -31,6 +46,7 @@ export class UtteranceSegmenter {
   private speechMs = 0;
   private silenceMs = 0;
   private utteranceMs = 0;
+  private dipMs = 0;
   /** Wall-clock time of the last voiced frame: when the speaker actually stopped talking. */
   lastVoiceAt = 0;
 
@@ -39,6 +55,11 @@ export class UtteranceSegmenter {
   /** Change how much silence ends an utterance (takes effect from the next frame). */
   setEndSilence(ms: number) {
     this.opts = { ...this.opts, endSilenceMs: ms };
+  }
+
+  /** Long-speech cut (0 = off); see SegmenterOptions.phraseMs. */
+  setPhraseMs(ms: number) {
+    this.opts = { ...this.opts, phraseMs: ms };
   }
 
   get endSilenceMs() {
@@ -66,6 +87,8 @@ export class UtteranceSegmenter {
     const noise = this.blocks.length ? Math.min(MAX_NOISE, ...this.blocks) : 0;
     const voiced = level > Math.max(this.opts.minLevel, noise * 3);
 
+    // A dip: quieter than speech, even if not silent (the gap between two words).
+    this.dipMs = level < Math.max(this.opts.minLevel * 1.5, noise * 4) ? this.dipMs + ms : 0;
     if (voiced) {
       this.lastVoiceAt = now;
       this.silenceMs = 0;
@@ -83,13 +106,15 @@ export class UtteranceSegmenter {
     this.utteranceMs += ms;
 
     const ended = this.silenceMs >= this.opts.endSilenceMs;
-    const forced = this.utteranceMs >= this.opts.maxUtteranceMs;
+    const phraseCut = !!this.opts.phraseMs && this.utteranceMs >= this.opts.phraseMs && this.dipMs >= DIP_MS;
+    const forced = this.utteranceMs >= this.opts.maxUtteranceMs || phraseCut;
     if (ended || forced) {
       const speechMs = this.speechMs;
       this.inSpeech = false;
       this.speechMs = 0;
       this.silenceMs = 0;
       this.utteranceMs = 0;
+      this.dipMs = 0;
       // A cough or click isn't an utterance.
       if (speechMs < this.opts.minSpeechMs) return null;
       return { type: "end", speechMs, forced: forced && !ended };

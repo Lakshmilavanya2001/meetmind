@@ -16,9 +16,10 @@ describe("wake phrase", () => {
     expect(stripWakePhrase("माइंड इस बात का ध्यान रखना")).toMatchObject({ woke: false });
     expect(stripWakePhrase("मेरा माइंड बदल गया।")).toMatchObject({ woke: false });
     // Parakeet's usual mishearings of "हे" before "माइंड".
-    for (const t of ["पेमाइंड इस कॉल में कौन कौन है?", "पाइमाइंड इस कॉल में कौन कौन है?", "फेमाइंड इस कॉल में कौन कौन है?", "पे माइंड, इस कॉल में कौन कौन है?"])
+    for (const t of ["पेमाइंड इस कॉल में कौन कौन है?", "पाइमाइंड इस कॉल में कौन कौन है?", "फेमाइंड इस कॉल में कौन कौन है?", "पे माइंड, इस कॉल में कौन कौन है?", "पमाइंड इस कॉल में कौन कौन है?"])
       expect(stripWakePhrase(t), t).toEqual({ woke: true, command: "इस कॉल में कौन कौन है?" });
     expect(stripWakePhrase("पेमेंट हो गया है।")).toMatchObject({ woke: false }); // "payment" isn't it
+    expect(stripWakePhrase("परमानेंट समाधान चाहिए।")).toMatchObject({ woke: false }); // nor "permanent"
     expect(stripWakePhrase("Okay meet mind schedule a call")).toMatchObject({ woke: true, command: "schedule a call" });
     expect(stripWakePhrase("हे माइंड, राहुल को जोड़ो")).toMatchObject({ woke: true, command: "राहुल को जोड़ो" });
     expect(stripWakePhrase("Hey Mind")).toEqual({ woke: true, command: "" });

@@ -225,6 +225,17 @@ Three problems from a real call (`kof-yrmi-znu`: English and Hindi, transcriptio
 - **"The interpreter is joining the call…" for the whole call.** Browsers decided the interpreter was present only from "participant connected" events. Someone joining a call the interpreter was already in gets it in LiveKit's join response, with no such event, so their panel never showed the live lines. Presence is now re-checked on connect/reconnect and track events, every 2 s, and whenever a message from the interpreter arrives (`use-interpreter.ts`).
 - Covered by `tests/unit/riva-stream.test.ts` and `e2e/interpreter-muting.spec.ts` (which now also checks the panel shows live lines, not "joining", after the listener reloads) (an 8-sentence English monologue to a Hindi listener: only the translation is received, also after a reload; 8 sentences → 8 lines).
 
+## Phrase-by-phrase interpretation (2026-10-25)
+
+Translation used to start only when the speaker paused (a whole sentence). Now it starts at each **short breath**, while they're still talking.
+
+- **Why not earlier still:** the Parakeet server sends no text during speech (tested: interim results, server VAD and Riva's own end-of-utterance settings; the session API has no interim option). Text comes only for audio we commit. So the interpreter commits more often: at a 250 ms breath (`PHRASE_PAUSE_MS`), and in run-on speech at the next dip between words after 3.5 s (`PHRASE_MAX_MS`; a 40 ms quiet gap, so never mid-word). Measured: every word still recognised at 250 ms breaths; a phrase's text arrives ~0.1 s after it ends.
+- **Context:** each phrase is translated as a continuation of what the same speaker said in the last 4 s (up to 3 phrases, with their translations), so phrases join into one sentence instead of restarting. Compared with whole-sentence translation (English → Hindi/Spanish, Hindi → English) the meaning held; one short phrase shifted slightly ("ठीक है" alone → "Alright").
+- **Measured** (three 5–8 s sentences, each spoken as three phrases with 0.3 s breaths, English → Hindi): the listener starts hearing a sentence **3.4–5.0 s after it began, up to 3.8 s before the speaker finishes it**, against 7.9–9.4 s (after the speaker finished) sentence by sentence.
+- **Not for "Hey Mind" listeners:** they keep the 800 ms pause and no phrase cuts (short cuts split commands, which then leak).
+- **Transcript:** lines are phrase-sized.
+- `INTERPRETER_MODE=sentence` turns it off (600 ms pause, whole sentences); `INTERPRETER_PAUSE_MS` overrides the phrase pause.
+
 ## Interpreter latency, round 2 (2026-10-25, after the colleague's playbook)
 
 Same 8-sentence test (English monologue → Hindi listener), two runs each:
@@ -277,7 +288,8 @@ Speech is generated at roughly real time, so waiting for a whole reply's audio m
 - **Translation.** Each viewer chooses Off, "As spoken" or a language (their profile language is listed first; the choice is remembered per browser). `GET /captions` returns the recent lines; lines not already in the viewer's language are translated by the LLM in batches of up to 12, with structured JSON output and temperature 0. The prompt keeps names and numbers, and treats lines as data, never instructions.
 - **Cost control.** Translations are cached in `SegmentTranslation` (segment + language), and an in-process single-flight map means viewers polling at the same moment share one model call. Ten Hindi viewers cost one translation per line.
 - **Failure behaviour.** If the model fails or returns something implausible (empty, or far longer than the source), the original line is shown untranslated and nothing is cached, so it's retried on the next poll.
-- **Latency.** Live capture now cuts audio into 2–12 s chunks at pauses (was 3–20 s). Measured with the real services: speech appears as a translated caption a few seconds after it's spoken; a single translation takes about 0.5 s and a batch of three about 1.9 s.
+- **Live push (2026-10-26).** In LiveKit calls the server agent joins whenever transcription **or** interpretation is on. It transcribes every consenting speaker with streaming Parakeet and sends each line on the data channel (topic `interpreter`, message `line` with `startMs`) the moment it's recognised; translations follow as `translation` messages. The transcript panel and captions show these at once (`use-call-feed.ts`): a caption in another language waits 400 ms for a pushed translation, then asks `GET /captions`. Polling remains only as a fallback (panel every 15 s, captions every 6 s). With interpretation off the agent only transcribes: it publishes no voice and translates nothing. The browser's chunk upload below is used only when the agent isn't in the call. Measured end of speech → text on the listener's screen: **0.9 s** median for both panel and captions (was 4.4 s and 2.1–2.8 s).
+- **Latency (upload fallback).** Live capture cuts audio into 2–12 s chunks at pauses (was 3–20 s). Measured with the real services: speech appears as a translated caption a few seconds after it's spoken; a single translation takes about 0.5 s and a batch of three about 1.9 s.
 - **Display.** Up to three lines over the video for 12 s each, with the speaker's name, a "translated" marker and the original on hover. Lines carry the right `lang` attribute for screen readers.
 
 ## Reminders, task assistance and post-call follow-up (Phase 11)

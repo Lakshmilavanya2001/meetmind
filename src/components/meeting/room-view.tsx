@@ -103,8 +103,9 @@ function InCall({ meeting, me, join }: { meeting: MeetingInfo; me: Me; join: Joi
   const [myRole, setMyRole] = useState(join.myRole);
   const { state: tState, setState: setTState } = useTranscriptionState(meeting.joinCode);
   const interp = useInterpreter(meeting.joinCode);
-  // While the AI interpreter is on it transcribes everyone from the call itself, so the browser doesn't upload audio too.
-  const capturing = !!tState?.enabled && !!tState?.myConsent && !interp.enabled && connection === ConnectionState.Connected;
+  // The server agent (the AI interpreter process) transcribes everyone live from the call itself whenever it's in the
+  // room (interpretation or transcription on). Only without it does the browser upload its own audio in pieces.
+  const capturing = !!tState?.enabled && !!tState?.myConsent && !interp.agentPresent && connection === ConnectionState.Connected;
   const capture = useTranscriptionCapture(meeting.joinCode, capturing);
 
   // Spoken disclosure (as on phone networks): everyone hears it when transcription is switched on.
@@ -168,7 +169,7 @@ function InCall({ meeting, me, join }: { meeting: MeetingInfo; me: Me; join: Joi
       </header>
 
       {meeting.isDirectCall && <CallStatusBanner meetingRef={meeting.joinCode} />}
-      {tState && <TranscriptionBanner meetingRef={meeting.joinCode} state={tState} onChange={setTState} capture={capture} interpreter={interp.enabled} />}
+      {tState && <TranscriptionBanner meetingRef={meeting.joinCode} state={tState} onChange={setTState} capture={capture} interpreter={interp.enabled} live={interp.agentPresent} />}
 
       <div className="relative flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
@@ -206,7 +207,7 @@ function InCall({ meeting, me, join }: { meeting: MeetingInfo; me: Me; join: Joi
         )}
       </div>
 
-      <CaptionsOverlay meetingRef={meeting.joinCode} choice={captions} transcriptionEnabled={!!tState?.enabled} />
+      <CaptionsOverlay meetingRef={meeting.joinCode} choice={captions} transcriptionEnabled={!!tState?.enabled} myUserId={me.id} />
       <footer className="grid shrink-0 justify-items-center gap-4 px-3 pt-2 pb-5">
         {/* Main keys, like a phone's in-call screen, with the big End key in the middle. */}
         <div className="flex items-start justify-center gap-2 sm:gap-6">

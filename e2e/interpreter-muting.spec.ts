@@ -4,7 +4,7 @@ import { PASSWORD } from "./helpers";
 
 // A (English) says 8 sentences with short pauses (e2e/fixtures/monologue-en.wav, Magpie voice Jason); B listens in Hindi
 // with original voices "Muted" (the default). B must receive only the interpreter's Hindi voice, not A's original —
-// also after reloading mid-call — and each sentence must come out as one line (Parakeet can split sentences itself).
+// also after reloading mid-call — and every line must be placed by its own word timings.
 test.setTimeout(240_000);
 const launch = (file: string) => chromium.launch({ args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-audio-capture=${path.resolve(file)}`, "--autoplay-policy=no-user-gesture-required"] });
 async function signIn(browser: Browser, email: string, baseURL: string) {
@@ -19,7 +19,7 @@ async function signIn(browser: Browser, email: string, baseURL: string) {
 // Audio the page is actually playing: one entry per <audio> element with a live track.
 const playing = (p: Page) => p.evaluate(() => [...document.querySelectorAll("audio")].filter((a) => (a.srcObject as MediaStream | null)?.getAudioTracks().some((t) => t.readyState === "live")).length);
 
-test("interpreter: the listener hears only the translation (also after a reload); each sentence is one line", async ({ baseURL }) => {
+test("interpreter: the listener hears only the translation (also after a reload); each line is placed at its real time", async ({ baseURL }) => {
   const [ba, bb] = await Promise.all([launch("e2e/fixtures/monologue-en.wav"), launch("e2e/fixtures/silence.wav")]);
   try {
     const a = await signIn(ba, "priya@acme.test", baseURL!);
@@ -64,9 +64,14 @@ test("interpreter: the listener hears only the translation (also after a reload)
     await a.waitForTimeout(25_000); // let the monologue finish
     const t = await (await a.request.get(`/api/meetings/${code}/transcript`)).json();
     const mine = t.segments.filter((s: { speakerLabel: string }) => s.speakerLabel === "Priya Patel");
+    // Phrase by phrase: at least a line per sentence (more when a sentence has a breath in it), each placed by
+    // its own word timings (no zero-length lines with guessed times).
     expect(mine.length).toBeGreaterThanOrEqual(7);
-    expect(mine.length).toBeLessThanOrEqual(9);
-    expect(mine.every((s: { startMs: number; endMs: number }) => s.endMs - s.startMs >= 1000)).toBe(true); // no fragments with guessed times
+    expect(mine.length).toBeLessThanOrEqual(24);
+    // In the order they were spoken (each placed by its own word timings), and none ending before it starts.
+    // (A one-word phrase can be very short: Parakeet gives some words the same start and end time.)
+    const spans = mine.map((s: { startMs: number; endMs: number }) => [s.startMs, s.endMs]);
+    expect(spans.every(([a, b]: number[], i: number) => b >= a && (i === 0 || a >= spans[i - 1][0] - 200))).toBe(true);
     console.log("[lines from the monologue]", mine.length, JSON.stringify(mine.map((s: { startMs: number; endMs: number; text: string }) => [Math.round(s.startMs / 100) / 10, Math.round(s.endMs / 100) / 10, s.text.split(" ").length])));
     const lat = await (await a.request.get(`/api/meetings/${code}/interpretation/latency`)).json();
     console.log("[latency]", JSON.stringify(lat.overall));

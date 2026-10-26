@@ -67,7 +67,8 @@ export async function setInterpretation(ctx: Ctx, ref: string, raw: unknown) {
       await tx.meetingParticipant.update({ where: { meetingId_userId: { meetingId: meeting.id, userId: ctx.userId } }, data: { transcriptionConsentAt: new Date() } });
     }
   });
-  if (!enabled && meeting.providerRoomId) await getCallingProvider(meeting.provider).removeParticipant(meeting.providerRoomId, INTERPRETER_IDENTITY).catch(() => {});
+  // The agent also transcribes: it leaves only if transcription is off too (it stops translating by itself).
+  if (!enabled && meeting.providerRoomId && !meeting.transcriptionEnabled) await getCallingProvider(meeting.provider).removeParticipant(meeting.providerRoomId, INTERPRETER_IDENTITY).catch(() => {});
   await pushRoomState(meeting);
   await audit({ action: enabled ? "interpretation.enable" : "interpretation.disable", actorUserId: ctx.userId, organizationId: ctx.organizationId, targetType: "Meeting", targetId: meeting.id });
   return getInterpretationState(ctx, ref);

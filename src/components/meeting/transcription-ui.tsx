@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleDot, ExternalLink, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,10 +16,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
+import { useCallFeed } from "./use-call-feed";
 import type { CaptureStatus, TranscriptionState } from "./use-transcription";
 
 /** Always-visible disclosure while transcription is on, with this participant's own consent control. */
-export function TranscriptionBanner({ meetingRef, state, onChange, capture, interpreter = false }: { meetingRef: string; state: TranscriptionState; onChange: (s: TranscriptionState) => void; capture: CaptureStatus; interpreter?: boolean }) {
+/** interpreter: the AI interpreter is translating; live: the server agent is transcribing the call (no uploads from this browser). */
+export function TranscriptionBanner({ meetingRef, state, onChange, capture, interpreter = false, live = false }: { meetingRef: string; state: TranscriptionState; onChange: (s: TranscriptionState) => void; capture: CaptureStatus; interpreter?: boolean; live?: boolean }) {
   const [busy, setBusy] = useState(false);
   if (!state.enabled) return null;
   async function consent(value: boolean) {
@@ -40,7 +42,7 @@ export function TranscriptionBanner({ meetingRef, state, onChange, capture, inte
       {state.myConsent ? (
         <>
           <span className="text-white/70">
-            {interpreter ? "Your voice is being transcribed and interpreted by the AI interpreter." : <>Your microphone audio is being transcribed{capture.active ? "" : " (starting…)"}.</>}
+            {interpreter ? "Your voice is being transcribed and interpreted by the AI interpreter." : live ? "Your microphone audio is being transcribed live." : <>Your microphone audio is being transcribed{capture.active ? "" : " (starting…)"}.</>}
             {capture.lastError && <span className="ml-1 text-amber-300">{capture.lastError}</span>}
           </span>
           <Button size="sm" variant="ghost" className="h-7 text-white hover:bg-white/10" onClick={() => consent(false)} disabled={busy}>Stop transcribing me</Button>
@@ -114,11 +116,24 @@ const clock = (ms: number) => {
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
 
-/** Live transcript inside the call (polls for new segments). */
+/**
+ * Live transcript inside the call. Lines are pushed by the server agent the moment they're recognised; the
+ * server's copy is loaded on open and every 15 s to fill any gap (it used to be re-fetched every 4 s).
+ */
 export function LiveTranscriptPanel({ meetingRef, enabled }: { meetingRef: string; enabled: boolean }) {
-  const [segments, setSegments] = useState<Segment[]>([]);
+  const [byId, setById] = useState<Map<string, Segment>>(() => new Map());
   const [error, setError] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const segments = useMemo(() => [...byId.values()].sort((a, b) => a.startMs - b.startMs), [byId]);
+
+  useCallFeed({
+    onLine: (l) =>
+      setById((prev) => {
+        const next = new Map(prev);
+        next.set(l.id, { id: l.id, startMs: l.startMs, speakerLabel: l.speaker, text: l.text });
+        return next;
+      }),
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -126,7 +141,11 @@ export function LiveTranscriptPanel({ meetingRef, enabled }: { meetingRef: strin
       try {
         const res = await api<{ segments: Segment[] }>(`/api/meetings/${meetingRef}/transcript`);
         if (!cancelled) {
-          setSegments(res.segments);
+          setById((prev) => {
+            const next = new Map(prev);
+            for (const seg of res.segments) next.set(seg.id, seg);
+            return next;
+          });
           setError(null);
         }
       } catch (err) {
@@ -134,7 +153,7 @@ export function LiveTranscriptPanel({ meetingRef, enabled }: { meetingRef: strin
       }
     };
     load();
-    const t = setInterval(load, 4000);
+    const t = setInterval(load, 15_000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -149,7 +168,7 @@ export function LiveTranscriptPanel({ meetingRef, enabled }: { meetingRef: strin
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2 text-xs text-white/60">
-        <span>{enabled ? "Updates every few seconds." : "Transcription is off."}</span>
+        <span>{enabled ? "Live: lines appear as they're spoken." : "Transcription is off."}</span>
         <Link href={`/meetings/${meetingRef}/transcript`} target="_blank" className="flex items-center gap-1 text-indigo-300 hover:underline">
           Full view <ExternalLink className="size-3" aria-hidden />
         </Link>

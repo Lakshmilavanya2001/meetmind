@@ -1,10 +1,10 @@
 import "server-only";
 import { db } from "../db";
-import { saveLineTranslation, translateLineStreaming } from "../services/translation";
+import { saveLineTranslation, translateLineStreaming, type PhraseContext } from "../services/translation";
 
 /** What the interpreter tells clients over the call's data channel (topic "interpreter"). */
 export type InterpreterMessage =
-  | { type: "line"; id: string; speakerId: string; speaker: string; language: string; text: string; speechEndAt: number }
+  | { type: "line"; id: string; speakerId: string; speaker: string; language: string; text: string; speechEndAt: number; startMs: number }
   | { type: "translation"; id: string; language: string; text: string }
   | { type: "latency"; id: string; language: string; asrMs: number; mtMs: number; ttsMs: number; queueMs: number; totalMs: number; spoken: boolean };
 
@@ -19,6 +19,15 @@ export interface InterpreterOutput {
 }
 
 export type Utterance = { text: string; language: string; speechStartAt: number; speechEndAt: number; resultAt: number };
+
+/**
+ * Speech recognised too late, or a single result covering too much audio, isn't live any more: voicing it would
+ * play old conversation after people have moved on (a stalled Parakeet session once returned 3 minutes of speech
+ * as one 329-word result, 167 s late). Such lines go into the transcript only, without translation or voice.
+ */
+export const STALE_RESULT_MS = 12_000;
+export const MAX_LIVE_SPAN_MS = 30_000;
+export const isStale = (u: Utterance) => u.resultAt - u.speechEndAt > STALE_RESULT_MS || u.speechEndAt - u.speechStartAt > MAX_LIVE_SPAN_MS;
 export type Speaker = { userId: string; label: string };
 export type MeetingRef = { id: string; startedAt: Date | null };
 
@@ -30,7 +39,18 @@ export type MeetingRef = { id: string; startedAt: Date | null };
  * End-to-end latency is measured from the moment the speaker stopped talking to the moment the
  * translated speech starts playing into the call.
  */
-export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Speaker; utt: Utterance; targetLanguages: string[]; out: InterpreterOutput; prepared?: Map<string, Promise<string | null>> }) {
+export async function interpretUtterance(o: {
+  meeting: MeetingRef;
+  speaker: Speaker;
+  utt: Utterance;
+  targetLanguages: string[];
+  out: InterpreterOutput;
+  prepared?: Map<string, Promise<string | null>>;
+  /** Phrase by phrase: what this speaker said just before, per target language. */
+  context?: Map<string, PhraseContext>;
+  /** Told each finished translation (to give the next phrase its context). */
+  onTranslated?: (language: string, text: string) => void;
+}) {
   const { meeting, speaker, utt, out } = o;
   const transcript = await db.meetingTranscript.upsert({ where: { meetingId: meeting.id }, update: {}, create: { meetingId: meeting.id, status: "PROCESSING" } });
   const base = (meeting.startedAt ?? new Date(utt.speechStartAt)).getTime();
@@ -48,7 +68,7 @@ export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Spea
     },
   });
   await db.meetingTranscript.update({ where: { id: transcript.id }, data: { indexedAt: null } });
-  out.send({ type: "line", id: segment.id, speakerId: speaker.userId, speaker: speaker.label, language: utt.language, text: utt.text, speechEndAt: utt.speechEndAt });
+  out.send({ type: "line", id: segment.id, speakerId: speaker.userId, speaker: speaker.label, language: utt.language, text: utt.text, speechEndAt: utt.speechEndAt, startMs: segment.startMs });
 
   const asrMs = Math.max(0, utt.resultAt - utt.speechEndAt);
   const targets = [...new Set(o.targetLanguages)].filter((l) => l !== utt.language);
@@ -76,10 +96,11 @@ export async function interpretUtterance(o: { meeting: MeetingRef; speaker: Spea
           speakPiece(translated);
         }
       } else {
-        translated = await translateLineStreaming({ id: segment.id, text: utt.text, language: utt.language }, language, speakPiece);
+        translated = await translateLineStreaming({ id: segment.id, text: utt.text, language: utt.language }, language, speakPiece, o.context?.get(language));
       }
       const mtMs = (st.firstPieceAt ?? Date.now()) - t0;
       if (!translated) return; // translation failed: captions show the original
+      o.onTranslated?.(language, translated);
       if (st.shown !== translated) out.send({ type: "translation", id: segment.id, language, text: translated });
       const spoken = st.first ? await st.first : null;
       const ttsMs = spoken?.ttsMs ?? 0;

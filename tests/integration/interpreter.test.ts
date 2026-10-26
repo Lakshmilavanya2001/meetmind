@@ -96,7 +96,7 @@ describe("interpretation settings", () => {
     await expect(setMyCallLanguage(outsider, meeting.joinCode, { language: "hi" })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("the interpreter may stay in the room only while interpretation is on", async () => {
+  it("the agent may stay in the room only while interpretation or transcription is on", async () => {
     const { host, meeting } = await setup();
     const room = (await db.meeting.findUniqueOrThrow({ where: { id: meeting.id } })).providerRoomId!;
     const removed = fake.removeParticipant as unknown as { mock: { calls: unknown[][] }; mockClear(): void };
@@ -105,6 +105,11 @@ describe("interpretation settings", () => {
     expect(removed.mock.calls).toContainEqual([room, INTERPRETER_IDENTITY]);
     await setInterpretation(host, meeting.joinCode, { enabled: true });
     removed.mockClear();
+    await handleCallingEvent("LIVEKIT", { type: "participant_joined", roomId: room, identity: INTERPRETER_IDENTITY, at: new Date() });
+    expect(removed.mock.calls).toEqual([]);
+    // Interpretation off, transcription still on: the agent stays to transcribe live.
+    await setInterpretation(host, meeting.joinCode, { enabled: false });
+    expect(removed.mock.calls).toEqual([]);
     await handleCallingEvent("LIVEKIT", { type: "participant_joined", roomId: room, identity: INTERPRETER_IDENTITY, at: new Date() });
     expect(removed.mock.calls).toEqual([]);
   });

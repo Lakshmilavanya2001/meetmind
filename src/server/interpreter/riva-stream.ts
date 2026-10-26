@@ -25,6 +25,8 @@ export const WATCHDOG_MS = 20_000;
 const WATCHDOG_COMMITS = 3;
 /** With no audio for this long (muted speaker), send silence so the server keeps the session. */
 export const KEEPALIVE_MS = 3000;
+/** Results arriving this late mean the server session is falling behind: reopen it rather than let it lag further. */
+export const LATE_RESULT_MS = 10_000;
 const MAX_CLOCK = 3000; // ≈5 min of 100 ms batches
 
 export type RivaUtterance = { text: string; language: string; commitAt: number; speechStartAt: number; speechEndAt: number; resultAt: number };
@@ -150,6 +152,10 @@ export class RivaStream {
       this.rearm();
     }
     if (text) this.onUtterance({ text, language: this.language, commitAt, speechStartAt: startAt, speechEndAt: endAt, resultAt: now });
+    if (now - endAt > LATE_RESULT_MS) {
+      this.onError(`results arriving ${Math.round((now - endAt) / 1000)} s late (reopening the session)`);
+      this.reopen();
+    }
   }
 
   /**

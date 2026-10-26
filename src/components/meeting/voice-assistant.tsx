@@ -259,12 +259,23 @@ export function VoiceAssistant({ meetingRef, conversationId, onConversation }: {
     if (!active || !track) return;
     let ctx: AudioContext | null = null;
     let stopped = false;
+    // While listening for "Hey Mind", the interpreter holds this person's speech until we say whether it was a
+    // command. Tell it a check has begun as soon as they start talking (so a slow check can't let a command
+    // through), and that there won't be one when a sound is dropped or can't be checked now.
+    const wake = () => modeRef.current === "wake";
+    const notChecking = () => wake() && tellInterpreter({ checking: false });
     const chunker = new SpeechChunker(
       (c) => {
-        if (stopped || busyRef.current || phaseRef.current === "speaking") return;
+        if (stopped || busyRef.current || phaseRef.current === "speaking") return notChecking();
         send(encodeWav(c.samples, TARGET_RATE));
       },
       { minMs: 300, maxMs: 12_000, pauseMs: 700, frameMs: 100 },
+      {
+        onStart: () => {
+          if (wake() && !busyRef.current && phaseRef.current !== "speaking") tellInterpreter({ checking: true });
+        },
+        onDrop: notChecking,
+      },
     );
     (async () => {
       try {
@@ -290,7 +301,7 @@ export function VoiceAssistant({ meetingRef, conversationId, onConversation }: {
       stopped = true;
       ctx?.close().catch(() => {});
     };
-  }, [active, track, send]);
+  }, [active, track, send, tellInterpreter]);
 
   useEffect(() => {
     if (phase === "idle") modeRef.current = baseMode();

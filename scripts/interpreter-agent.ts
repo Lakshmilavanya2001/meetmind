@@ -1,6 +1,8 @@
 /**
- * The AI interpreter process. Joins every live meeting that has interpretation switched on,
- * and leaves when it's switched off or the meeting ends.
+ * The AI interpreter process. Joins every live meeting that has interpretation or transcription switched on,
+ * and leaves when both are off or the meeting ends. With transcription only, it transcribes live (streaming,
+ * phrase by phrase) instead of browsers uploading audio in pieces; it translates and speaks only when
+ * interpretation is on.
  *   npm run interpreter          (run with: tsx --conditions=react-server)
  */
 import "dotenv/config";
@@ -32,7 +34,7 @@ async function main() {
 
   const tick = async () => {
     const wanted = await db.meeting.findMany({
-      where: { status: "LIVE", interpretationEnabled: true, providerRoomId: { not: null }, provider: "LIVEKIT" },
+      where: { status: "LIVE", OR: [{ interpretationEnabled: true }, { transcriptionEnabled: true }], providerRoomId: { not: null }, provider: "LIVEKIT" },
       select: { id: true, providerRoomId: true },
     });
     const ids = new Set(wanted.map((m) => m.id));
