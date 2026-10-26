@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OfflineAsr, offlineAsrLanguages, pcmToWav } from "@/server/interpreter/offline-asr";
-import type { SttProvider } from "@/server/providers/stt";
+import { createRivaOfflineSttProvider, type SttProvider } from "@/server/providers/stt";
 
 const FRAME = 3200; // 100 ms of 16 kHz 16-bit audio
 
@@ -72,6 +72,23 @@ describe("offline recognition for the interpreter", () => {
     expect([...offlineAsrLanguages(stt, { INTERPRETER_OFFLINE_ASR_LANGUAGES: "en, hi" })]).toEqual(["en"]);
     expect(offlineAsrLanguages(stt, {}).size).toBe(0);
     expect(offlineAsrLanguages(null, { INTERPRETER_OFFLINE_ASR_LANGUAGES: "en" }).size).toBe(0);
+  });
+
+  it("talks to a Riva offline server (Parakeet) with its language codes", async () => {
+    const seen: { url: string; language: string; bytes: number }[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const form = init!.body as FormData;
+      seen.push({ url: String(url), language: String(form.get("language")), bytes: (form.get("file") as Blob).size });
+      return new Response(JSON.stringify({ text: " नमस्ते टीम। ", language_code: "hi-IN" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const stt = createRivaOfflineSttProvider("http://127.0.0.1:8001/", fetchImpl);
+    const out = await stt.transcribe(pcmToWav(Buffer.alloc(3200)), { mimeType: "audio/wav", language: "hi" });
+    expect(out.text).toBe("नमस्ते टीम।");
+    expect(seen[0]).toEqual({ url: "http://127.0.0.1:8001/v1/audio/transcriptions", language: "hi-IN", bytes: 44 + 3200 });
+    expect(stt.languages).toEqual(expect.arrayContaining(["en", "hi"]));
+    expect(stt.languages).not.toContain("zh");
+    const down = createRivaOfflineSttProvider("http://127.0.0.1:8001", (async () => new Response("", { status: 503 })) as unknown as typeof fetch);
+    await expect(down.transcribe(Buffer.alloc(44), { mimeType: "audio/wav", language: "en" })).rejects.toThrow(/503/);
   });
 
   it("writes a 16 kHz mono WAV header", () => {

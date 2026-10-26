@@ -100,6 +100,35 @@ export function wavToPcm16(wav: Buffer): Buffer {
   throw new AppError("VALIDATION", "WAV file has no audio data.");
 }
 
+/**
+ * NVIDIA Riva ASR NIM in offline mode (HTTP `POST /v1/audio/transcriptions`, e.g. Parakeet multilingual from
+ * deploy/gpu-host): one request per finished utterance, answered in ~50–150 ms. Used by the interpreter when
+ * INTERPRETER_OFFLINE_ASR_URL is set. The multilingual model detects the language itself; the code is a hint.
+ */
+export function createRivaOfflineSttProvider(baseUrl: string, fetchImpl: typeof fetch = fetch): SttProvider {
+  const url = `${baseUrl.replace(/\/$/, "")}/v1/audio/transcriptions`;
+  return {
+    model: "riva-offline",
+    // Parakeet 1.1B RNNT multilingual: every call language except Chinese and Vietnamese.
+    languages: ["en", "hi", "es", "fr", "de", "it", "pt", "ja", "ko", "ar"],
+    async transcribe(audio, opts) {
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(audio)], { type: opts.mimeType }), opts.fileName ?? "audio.wav");
+      form.append("language", RIVA_LANG[(opts.language ?? "en").split("-")[0]] ?? "en-US");
+      let res: Response;
+      try {
+        res = await fetchImpl(url, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
+      } catch (err) {
+        throw new TransientSttError(`Riva offline ASR unreachable: ${(err as Error).message}`);
+      }
+      if (res.status === 429 || res.status >= 500) throw new TransientSttError(`Riva offline ASR error ${res.status}`);
+      if (!res.ok) throw new AppError("PROVIDER_UNAVAILABLE", `Riva offline ASR rejected the audio (${res.status}): ${(await res.text().catch(() => "")).slice(0, 200)}`);
+      const data = (await res.json()) as { text?: string };
+      return { text: (data.text ?? "").trim() };
+    },
+  };
+}
+
 export function createRivaSttProvider(config: RivaConfig): SttProvider {
   return {
     model: `riva:${config.model}`,

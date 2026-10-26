@@ -1,11 +1,11 @@
 import type { SttProvider } from "../providers/stt";
 
 /**
- * Offline speech recognition for the interpreter: the OpenAI-compatible STT server (STT_*, IBM Granite Speech on
- * the GPU host) for the languages in INTERPRETER_OFFLINE_ASR_LANGUAGES. The interpreter's own voice detector finds
- * the end of each utterance and the whole utterance goes in one request, so its text is back ~0.15–0.3 s after the
- * pause; the streaming Parakeet server needs 0.8–1.1 s after each pause to finish (measured 2026-10-26). Granite
- * recognises English well but not Hindi, so Hindi stays on Parakeet.
+ * Offline speech recognition for the interpreter, for the languages in INTERPRETER_OFFLINE_ASR_LANGUAGES: Parakeet
+ * on a Riva ASR NIM in offline mode (INTERPRETER_OFFLINE_ASR_URL; deploy/gpu-host), or else the OpenAI-compatible
+ * STT_* server (Granite, English only). The interpreter's own voice detector finds the end of each utterance and
+ * the whole utterance goes in one request, so its text is back in ~50–150 ms (Granite: 0.15–0.3 s). The streaming
+ * Parakeet server needs 0.8–1.1 s after each pause to finish a sentence (measured 2026-10-26).
  *
  * Audio is kept for the last ~30 s with the wall-clock time it arrived, so an utterance is cut out by time:
  * from a little before the detector heard speech start to a little after the last voiced frame.

@@ -55,3 +55,6 @@ infra/livekit.yaml
 
 # editor swap files
 *.swp
+
+# GPU host settings
+/deploy/gpu-host/.env

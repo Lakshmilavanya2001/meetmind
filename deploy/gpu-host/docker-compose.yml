@@ -1,0 +1,46 @@
+# Offline speech recognition for the interpreter (English and Hindi), on this host's NVIDIA GPU:
+#   asr   NVIDIA Parakeet 1.1B RNNT multilingual on the Riva ASR NIM runtime, OFFLINE mode: one
+#         request per finished utterance  -> 127.0.0.1:8001 (HTTP), 127.0.0.1:50051 (gRPC)
+# The interpreter sends each utterance here (INTERPRETER_OFFLINE_ASR_URL); translation and voice
+# stay on the configured LLM and Magpie.
+#
+#   docker compose --env-file .env up -d --build        # .env: MODELS_DIR=/home/ubuntu/meetmind-models
+#
+# Model in MODELS_DIR/nim-export/asr-parakeet/custom_model.tar.gz: NGC model
+# nim/nvidia/parakeet-1-1b-rnnt-multilingual, version l40sx1-ofl-25.12.1-fp16-uws2gbmzww (the L40S
+# offline build for Riva 25.12, which the runtime image below runs). Other GPUs need their own build.
+name: meetmind-gpu
+
+x-gpu: &gpu
+  driver: nvidia
+  count: all
+  capabilities: [gpu]
+
+services:
+  asr:
+    # The Whisper NIM image is used only as the Riva 25.12 runtime (Parakeet's own NIM image would be
+    # another ~20 GB on disk), plus the packages Parakeet's NeMo model imports (asr.Dockerfile). It
+    # serves the Parakeet model repository mounted at NIM_EXPORT_PATH.
+    build: {context: ., dockerfile: asr.Dockerfile}
+    image: meetmind-asr-runtime:0.1
+    restart: unless-stopped
+    ports: ["127.0.0.1:8001:9000", "127.0.0.1:50051:50051"]
+    shm_size: 8g
+    environment:
+      NIM_DISABLE_MODEL_DOWNLOAD: "true"
+      NIM_EXPORT_PATH: /opt/nim/export
+      NIM_HTTP_API_PORT: "9000"
+      NIM_GRPC_API_PORT: "50051"
+      ASR_WARM_LANGUAGES: en-US hi-IN
+    volumes:
+      - ${MODELS_DIR:-/home/ubuntu/meetmind-models}/nim-export/asr-parakeet:/opt/nim/export:ro
+      # the model repository is unpacked here at start (~3.5 GB): on the host, where it can be seen and cleaned
+      - ${MODELS_DIR:-/home/ubuntu/meetmind-models}/nim-workspace/asr:/data/models
+      - ./asr_healthcheck.py:/opt/healthcheck.py:ro
+    deploy: {resources: {reservations: {devices: [*gpu]}}}
+    healthcheck:
+      interval: 15s
+      retries: 40
+      start_period: 120s
+      timeout: 120s                     # the first check warms up each language
+      test: ["CMD", "python3", "/opt/healthcheck.py"]

@@ -30,7 +30,7 @@ import { ASSISTANT_MAX_MS, ASSISTANT_STATE_TOPIC, INTERPRETER_IDENTITY, INTERPRE
 import { indicAsrSupports, indicCovers, readIndicConfig } from "../providers/indic";
 import { IndicAsrStream } from "./indic-asr-stream";
 import { OfflineAsr, offlineAsrLanguages } from "./offline-asr";
-import { createOpenAiSttProvider, readSttConfig } from "../providers/stt";
+import { createOpenAiSttProvider, createRivaOfflineSttProvider, readSttConfig } from "../providers/stt";
 import { stripWakePhrase } from "../../lib/voice-commands";
 
 const ROSTER_REPEAT_MS = 5_000;
@@ -55,9 +55,16 @@ const UNKNOWN_STATE_MS = 8000;
 import { IndicTtsStream, TTS_RATE } from "./indic-tts-stream";
 export { INTERPRETER_IDENTITY };
 
-/** Offline recognition (the STT_* server) for the languages in INTERPRETER_OFFLINE_ASR_LANGUAGES; others stream to Riva. */
+/**
+ * Offline recognition for the languages in INTERPRETER_OFFLINE_ASR_LANGUAGES; others stream to Riva. The server is
+ * INTERPRETER_OFFLINE_ASR_URL (Riva offline, e.g. Parakeet from deploy/gpu-host) or else the STT_* server (Granite).
+ */
 const sttConfig = readSttConfig();
-const offlineStt = sttConfig ? createOpenAiSttProvider(sttConfig) : null;
+const offlineStt = process.env.INTERPRETER_OFFLINE_ASR_URL
+  ? createRivaOfflineSttProvider(process.env.INTERPRETER_OFFLINE_ASR_URL)
+  : sttConfig
+    ? createOpenAiSttProvider(sttConfig)
+    : null;
 const OFFLINE_ASR_LANGUAGES = offlineAsrLanguages(offlineStt);
 const OUT_RATE = 48_000; // matches TTS_RATE, so streamed Indic audio needs no resampling
 void TTS_RATE;
@@ -245,7 +252,7 @@ function readAhead(stream: ReadableStream<Uint8Array>): AsyncIterable<Int16Array
 class SpeakerSession {
   private riva: RivaStream | null = null;
   private indic: IndicAsrStream | null = null;
-  /** Offline recognition (STT_* server): one request per finished utterance, cut by our own voice detector. */
+  /** Offline recognition: one request per finished utterance, cut by our own voice detector. */
   private offline: OfflineAsr | null = null;
   // Starts with the longer "Hey Mind" pause until the caller's browser has said whether it's listening.
   private segmenter = new UtteranceSegmenter({ ...segmenterOptions(), endSilenceMs: Math.max(segmenterOptions().endSilenceMs, WAKE_PAUSE_MS) });
