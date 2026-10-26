@@ -10,6 +10,7 @@ import { Markdown } from "./markdown";
 import { useAssistant, type Item, type PlanView } from "./use-assistant";
 import { useVoiceIO } from "./use-voice-io";
 import { classifyYesNo } from "@/lib/voice-commands";
+import { classifyResultLink } from "@/lib/uber-link";
 import { api } from "@/lib/api";
 import { CitationList } from "@/components/transcripts/citations";
 
@@ -241,7 +242,7 @@ function PlanCard({ plan, dark, busy, onDecide }: { plan: PlanView; dark: boolea
               <div className="min-w-0">
                 <p><span className={muted}>{s.index}.</span> {s.status === "done" && s.resultSummary ? s.resultSummary : s.summary}</p>
                 <p className={cn("text-xs", s.error ? "text-destructive" : muted)}>{s.error ?? s.why}{s.dependsOn.length > 0 && !s.error ? ` · after step ${s.dependsOn.join(", ")}` : ""}</p>
-                {s.link && s.status === "done" && <Link href={s.link} className="text-xs text-primary underline underline-offset-2">open</Link>}
+                {s.status === "done" && <ResultLink href={s.link} className="text-xs text-primary underline underline-offset-2" />}
               </div>
             </li>
           );
@@ -293,9 +294,7 @@ function Message({ item, dark, busy, onPick, onDecide }: { item: Item; dark: boo
     return (
       <div className={cn("max-w-[95%]", dark && "[&_a]:text-indigo-300")}>
         <Markdown text={item.content} />
-        {item.link && (
-          <Link href={item.link} className="mt-1 inline-block text-sm font-medium text-primary underline underline-offset-2">open</Link>
-        )}
+        <ResultLink href={item.link} className="mt-1 inline-block text-sm font-medium text-primary underline underline-offset-2" />
       </div>
     );
   }
@@ -317,8 +316,8 @@ function Message({ item, dark, busy, onPick, onDecide }: { item: Item; dark: boo
         <span>
           <span className="font-medium">{item.label}</span>
           {item.summary && !c && <> — {item.summary}</>}
-          {item.link && !c && (
-            <> · <Link href={item.link} className="text-primary underline underline-offset-2">open</Link></>
+          {classifyResultLink(item.link) && !c && (
+            <> · <ResultLink href={item.link} className="text-primary underline underline-offset-2" /></>
           )}
         </span>
       </div>
@@ -356,4 +355,17 @@ function Message({ item, dark, busy, onPick, onDecide }: { item: Item; dark: boo
       )}
     </div>
   );
+}
+
+/** A tool result's link: a page in the app, or "Open in Uber" in a new tab. Other addresses are never shown. */
+function ResultLink({ href, className }: { href?: string | null; className: string }) {
+  const kind = classifyResultLink(href);
+  if (kind === "internal") return <Link href={href!} className={className}>open</Link>;
+  if (kind === "uber")
+    return (
+      <a href={href!} target="_blank" rel="noopener noreferrer" className={className}>
+        Open in Uber ↗
+      </a>
+    );
+  return null;
 }

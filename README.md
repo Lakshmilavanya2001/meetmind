@@ -122,7 +122,7 @@ docs/                    ARCHITECTURE, API, SECURITY, DEPLOYMENT, TESTING, TEAMS
 | Indic speech stack (ASR / translate / TTS) | **Off** since 2026-10-24 (`INDIC_*` commented out in `.env`, tunnel not started). GPU host `10.79.252.124` via `scripts/indic-tunnel.sh` if it's turned back on |
 | SMTP (email invitations) | Configured, but **Gmail rejects the supplied app password** (535). Invitations are delivered in-app. Fix the credentials, then use **Test login** in Workspace settings |
 | SMS (Twilio) | Not configured. This dev server uses `SMS_DEV_OUTBOX=true`, so texts appear in Settings → Text messages. Without either, SMS is off and reminders stay in-app |
-| Food, cab and table providers | Sandbox only (no real orders). Real providers need partner API agreements |
+| Food, cab and table providers | Sandbox only (no real orders). Real providers need partner API agreements. Cab results also offer **Open in Uber**, which opens Uber with the route filled in for a real ride booked and paid in Uber |
 | Microsoft Teams | Not configured (no credentials). Connector disabled by design |
 
 ## Known limitations

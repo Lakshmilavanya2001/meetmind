@@ -95,3 +95,4 @@ docker run --rm --network host --ipc=host -u $(id -u):$(id -g) -e HOME=/tmp -v "
 ### Live push measurement (2026-10-26)
 
 A one-off Playwright check (not kept in the suite): speaker A plays a 60 s English monologue with transcription on and the interpreter off; listener B has the transcript panel open and captions "As spoken". Time from the end of each spoken line to it appearing on B's screen, two runs: **panel 0.9 s median (worst 1.3 s), captions 0.9 s median (worst 1.3 s)**. Before the server agent transcribed and pushed lines: panel 4.2–4.4 s, captions 2.1–2.8 s.
+- **Open in Uber** (`tests/unit/uber-link.test.ts`): the link's pickup and drop-off fields (with and without coordinates), only app pages and `https://m.uber.com` links are shown in the chat, and the geocoder (off unless configured, countries filter, no contact sent unless set, caching, failures give no coordinates).

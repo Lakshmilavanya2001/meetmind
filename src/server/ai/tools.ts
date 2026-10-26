@@ -1,5 +1,7 @@
 import "server-only";
 import { z } from "zod";
+import { geocode, type GeoPoint } from "../providers/geocode";
+import { uberRideLink } from "@/lib/uber-link";
 import { AppError } from "../errors";
 import { requireMember } from "../auth/permissions";
 import type { AuthContext } from "../auth/session";
@@ -47,6 +49,17 @@ export type AgentContext = {
   /** Which specialist agent is acting (for the audit log). */
   agent?: string;
 };
+
+/** "Open in Uber" link for a route; coordinates when the geocoder answers within 3 s, else the addresses only. */
+async function uberLinkFor(pickup: string, drop: string) {
+  const none = { p: null, d: null };
+  const geo = await Promise.race([
+    Promise.all([geocode(pickup), geocode(drop)]).then(([p, d]) => ({ p, d })),
+    new Promise<typeof none>((r) => setTimeout(() => r(none), 3000)),
+  ]).catch(() => none);
+  const at = (address: string, g: GeoPoint | null) => (g ? { address, lat: g.lat, lng: g.lng } : { address });
+  return uberRideLink(at(pickup, geo.p), at(drop, geo.d), process.env.UBER_CLIENT_ID || undefined);
+}
 
 export type ToolOutput = {
   data: unknown;
@@ -816,8 +829,16 @@ export const TOOLS: ToolDef[] = [
     schema: z.object({ pickup: z.string().min(3).max(200), drop: z.string().min(3).max(200) }),
     label: () => "Checking cab fares",
     run: async (ctx, a) => {
-      const opts = await cabOptions(memberCtx(ctx), a.pickup, a.drop);
-      return { data: { sandbox: getCommerce().sandbox, options: opts.map((o) => ({ type: o.type, label: o.label, seats: o.seats, fare: rupees(o.farePaise), pickupEtaMin: o.pickupEtaMinutes, tripMin: o.tripMinutes, distanceKm: o.distanceKm })) }, summary: `${opts.length} cab options` };
+      const [opts, uber] = await Promise.all([cabOptions(memberCtx(ctx), a.pickup, a.drop), uberLinkFor(a.pickup, a.drop)]);
+      return {
+        data: {
+          sandbox: getCommerce().sandbox,
+          options: opts.map((o) => ({ type: o.type, label: o.label, seats: o.seats, fare: rupees(o.farePaise), pickupEtaMin: o.pickupEtaMinutes, tripMin: o.tripMinutes, distanceKm: o.distanceKm })),
+          real_ride: "An 'Open in Uber' button is shown under these results: it opens Uber with this pickup and drop-off for a real ride at Uber's own prices, confirmed and paid in Uber. Mention it once; you can't book or price Uber rides yourself.",
+        },
+        summary: `${opts.length} cab options`,
+        link: uber,
+      };
     },
   }),
   def({
