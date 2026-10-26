@@ -1,6 +1,6 @@
 # Offline speech recognition for the interpreter (English and Hindi), on this host's NVIDIA GPU:
 #   asr   NVIDIA Parakeet 1.1B RNNT multilingual on the Riva ASR NIM runtime, OFFLINE mode: one
-#         request per finished utterance  -> 127.0.0.1:8001 (HTTP), 127.0.0.1:50051 (gRPC)
+#         request per finished utterance  -> 127.0.0.1:8001 (Riva HTTP API), 127.0.0.1:50051 (gRPC)
 # The interpreter sends each utterance here (INTERPRETER_OFFLINE_ASR_URL); translation and voice
 # stay on the configured LLM and Magpie.
 #
@@ -24,7 +24,9 @@ services:
     build: {context: ., dockerfile: asr.Dockerfile}
     image: meetmind-asr-runtime:0.1
     restart: unless-stopped
-    ports: ["127.0.0.1:8001:9000", "127.0.0.1:50051:50051"]
+    # 8001 -> Riva's own HTTP server (50000), not the NIM's HTTP front end (9000): the front end is one process
+    # making blocking calls, so it handles one request at a time. Same API, same JSON.
+    ports: ["127.0.0.1:8001:50000", "127.0.0.1:50051:50051"]
     shm_size: 8g
     environment:
       NIM_DISABLE_MODEL_DOWNLOAD: "true"
@@ -32,6 +34,9 @@ services:
       NIM_HTTP_API_PORT: "9000"
       NIM_GRPC_API_PORT: "50051"
       ASR_WARM_LANGUAGES: en-US hi-IN
+      # Riva's HTTP server handles one request per worker at a time, and runs ONE worker by default. With 32,
+      # concurrent requests reach Triton together and it batches them on the GPU.
+      HTTP_MAX_WORKERS: "32"
     volumes:
       - ${MODELS_DIR:-/home/ubuntu/meetmind-models}/nim-export/asr-parakeet:/opt/nim/export:ro
       # the model repository is unpacked here at start (~3.5 GB): on the host, where it can be seen and cleaned

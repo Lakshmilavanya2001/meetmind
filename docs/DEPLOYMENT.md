@@ -137,6 +137,8 @@ curl -L -H "Authorization: Bearer $NGC_API_KEY" -o ~/meetmind-models/nim-export/
 cd deploy/gpu-host && echo "MODELS_DIR=$HOME/meetmind-models" > .env && docker compose --env-file .env up -d --build
 ```
 
-It is healthy after ~1.5 min (it warms up English and Hindi first). Then set `INTERPRETER_OFFLINE_ASR_URL=http://127.0.0.1:8001`
+It is healthy after ~1.5 min (it warms up English and Hindi first). Port 8001 is Riva's own HTTP server with 32
+workers (`HTTP_MAX_WORKERS`), not the NIM's HTTP front end, which handles one request at a time; that way concurrent
+requests reach the GPU together and are batched. Then set `INTERPRETER_OFFLINE_ASR_URL=http://127.0.0.1:8001`
 and `INTERPRETER_OFFLINE_ASR_LANGUAGES=en,hi` and restart the interpreter. Other GPUs need their own build of the model
 (NGC lists versions per GPU, e.g. `h100x1-ofl-…`).
