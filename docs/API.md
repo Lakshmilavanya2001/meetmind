@@ -194,9 +194,11 @@ Orders and bookings are created only through the assistant (tools `order_food`, 
 | POST | `/api/meetings/:ref/interpretation` | host, co-host | `{ enabled }` (mainly to turn it off for everyone). Live calls only. Turning it on also turns transcription on (each person's consent still applies); turning transcription off turns it off |
 | PUT | `/api/meetings/:ref/interpretation/me` | participants | `{ language }`: the language you speak and want to hear. In a live call this opts your own voice in and switches the interpreter on for the call; no host step |
 | DELETE | `/api/meetings/:ref/interpretation/me` | participants | Stop sending your voice to the interpreter; you still hear others in your language |
+| PUT | `/api/meetings/:ref/interpretation/me/voice` | participants | `{ voice }`: your voice, how everyone hears your translated speech (`"Jason.Happy"`, `"Ray"`), or `null` for each language's default. Must be one of `voices` (every voice on offer). Listeners whose language lacks the tone or voice hear the closest match |
+| POST | `/api/meetings/:ref/interpretation/voice-preview` | participants | `{ voice }` → `audio/wav`: a short sample, in your call language if it has that exact voice, else in one that does. 20 per minute |
 | GET | `/api/meetings/:ref/interpretation/latency` | participants | `{ overall: { count, avgMs, p50Ms, p95Ms, maxMs, avgAsrMs, avgMtMs, avgTtsMs, avgQueueMs }, byPair, recent }` |
 
-In the call, the interpreter publishes one audio track per language (`interpreter-<lang>`) and data messages on topic `interpreter`: `roster`, `line` (`id`, `speakerId`, `speaker`, `language`, `text`, `startMs`), `translation` and `latency`. The agent is in the call whenever transcription or interpretation is on; with transcription only it sends `line` messages and no voice.
+In the call, the interpreter publishes one audio track per language (`interpreter-<lang>`) and data messages on topic `interpreter`: `roster` (`languages`: who speaks what; `voices`: languages with a voice track), `line` (`id`, `speakerId`, `speaker`, `language`, `text`, `startMs`), `translation` and `latency`. The agent is in the call whenever transcription or interpretation is on; with transcription only it sends `line` messages and no voice.
 
 ## Webhooks
 | Method | Path | Notes |
