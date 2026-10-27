@@ -22,7 +22,7 @@ import { parseWav, resampleInt16, toMono } from "./audio";
 import { isStale, interpretUtterance, type InterpreterMessage, type InterpreterOutput } from "./pipeline";
 import { RivaStream } from "./riva-stream";
 import { catchUpRate, timeStretch } from "./time-stretch";
-import { magpieCovers, readMagpieConfig, streamMagpieSpeech } from "../providers/magpie";
+import { allVoices, listMagpieVoices, magpieCovers, readMagpieConfig, streamMagpieSpeech, voiceIn, type MagpieVoice } from "../providers/magpie";
 import { prepareTranslation, type PhraseContext } from "../services/translation";
 import { PHRASE_MAX_MS, PHRASE_PAUSE_MS, phraseMode, segmenterOptions, UtteranceSegmenter, WAKE_PAUSE_MS } from "./segmenter";
 
@@ -72,10 +72,10 @@ const DEBUG = process.env.INTERPRETER_DEBUG === "1";
 const FRAME = OUT_RATE / 100; // 10 ms
 const encoder = new TextEncoder();
 
-type Person = { userId: string; label: string; language: string; consent: boolean };
+type Person = { userId: string; label: string; language: string; consent: boolean; voice: string | null };
 export type AgentConfig = { livekitUrl: string; apiKey: string; apiSecret: string; riva: RivaConfig };
 
-/** One language's voice in the call: a published audio track that plays translations in order. */
+/** One language's voice in the call: a published audio track that plays translations in order, each line in its speaker's chosen voice. */
 class LanguageVoice {
   private chain: Promise<void> = Promise.resolve();
   publication: LocalTrackPublication | null = null;
@@ -86,6 +86,7 @@ class LanguageVoice {
 
   constructor(readonly language: string) {
     const base = readIndicConfig().tts;
+    // Indic Speak has a single voice: when it's on, speakers' voice choices don't apply to its languages.
     if (base && indicCovers(language)) {
       this.indic = new IndicTtsStream(base, language, (pcm) => this.push(pcm));
       this.indic.start();
@@ -116,11 +117,11 @@ class LanguageVoice {
    * make a whole file), but playback keeps the order of the calls, so a sentence spoken clause by clause plays
    * in order even if a later clause is ready first. Resolves when this text starts playing.
    */
-  speak(text: string): Promise<{ ttsMs: number; queueMs: number; playAt: number } | null> {
+  speak(text: string, voice: string | null = null): Promise<{ ttsMs: number; queueMs: number; playAt: number } | null> {
     if (this.indic) return this.indic.speak(text);
     const t0 = Date.now();
     let readyAt = 0;
-    const audio = this.makeAudio(text).then((a) => {
+    const audio = this.makeAudio(text, voice).then((a) => {
       readyAt = Date.now();
       return a;
     });
@@ -173,9 +174,9 @@ class LanguageVoice {
   }
 
   /** The audio for `text` as 16-bit PCM at OUT_RATE: streamed from Magpie when it covers the language, else a whole file. */
-  private async makeAudio(text: string): Promise<AsyncIterable<Int16Array> | null> {
+  private async makeAudio(text: string, voice: string | null): Promise<AsyncIterable<Int16Array> | null> {
     if (readMagpieConfig() && magpieCovers(this.language)) {
-      const stream = await streamMagpieSpeech(text, this.language, { sampleRate: OUT_RATE }).catch((err) => {
+      const stream = await streamMagpieSpeech(text, this.language, { sampleRate: OUT_RATE, voice }).catch((err) => {
         console.warn("[interpreter] streamed voice failed, using the whole-file voice:", (err as Error).message);
         return null;
       });
@@ -334,6 +335,8 @@ export class MeetingInterpreter {
   private people = new Map<string, Person>();
   private speakers = new Map<string, SpeakerSession>();
   private voices = new Map<string, LanguageVoice>();
+  /** Magpie's voices per language (refreshed with the roster; the provider caches it). */
+  private catalog = new Map<string, MagpieVoice[]>();
   private tracks = new Map<string, RemoteTrack>(); // identity → mic track
   /** People currently talking to the voice assistant (their words are for the assistant, not the call). */
   private withAssistant = new Map<string, number>();
@@ -437,19 +440,31 @@ export class MeetingInterpreter {
     return new Map(present.flatMap((id) => (this.people.has(id) ? [[id, this.people.get(id)!.language] as const] : [])));
   }
 
+  /** Speak a translation on its language's track in the voice the speaker chose (as close as that language has). */
+  private async speakIn(language: string, text: string, speakerVoice: string | null) {
+    const voice = this.voices.get(language);
+    if (!voice) return null;
+    return voice.speak(text, voiceIn(this.catalog, language, speakerVoice));
+  }
+
   /** Re-read who is here, their languages and consent; start/stop listeners and voices to match. */
   async refresh() {
     const m = await db.meeting.findUnique({
       where: { id: this.meeting.id },
-      select: { startedAt: true, interpretationEnabled: true, participants: { where: { removedAt: null }, select: { userId: true, callLanguage: true, transcriptionConsentAt: true, user: { select: { displayName: true, preferredLanguage: true } } } } },
+      select: { startedAt: true, interpretationEnabled: true, participants: { where: { removedAt: null }, select: { userId: true, callLanguage: true, callVoice: true, transcriptionConsentAt: true, user: { select: { displayName: true, preferredLanguage: true } } } } },
     });
     if (!m) return;
     this.startedAt = m.startedAt;
     this.interpreting = m.interpretationEnabled;
+    this.catalog = this.interpreting && readMagpieConfig() ? await listMagpieVoices() : new Map();
+    const offered = new Set(allVoices(this.catalog).map((v) => v.id));
     this.people = new Map(
       m.participants.map((p) => {
-        const lang = p.callLanguage ?? p.user.preferredLanguage;
-        return [p.userId, { userId: p.userId, label: p.user.displayName, language: interpreterLanguageCodes().includes(lang) ? lang : "en", consent: !!p.transcriptionConsentAt }];
+        const pref = p.callLanguage ?? p.user.preferredLanguage;
+        const lang = interpreterLanguageCodes().includes(pref) ? pref : "en";
+        // The voice others hear this person in; one the server doesn't offer means the default voice.
+        const voice = p.callVoice && offered.has(p.callVoice) ? p.callVoice : null;
+        return [p.userId, { userId: p.userId, label: p.user.displayName, language: lang, consent: !!p.transcriptionConsentAt, voice }];
       }),
     );
     const langs = this.presentLanguages();
@@ -473,21 +488,21 @@ export class MeetingInterpreter {
       void session.run();
     }
 
-    // One voice per language, needed only when more than one language is present.
-    // Voices only when interpreting (transcription alone needs none).
+    // One voice track per language, needed only when more than one language is present, and only when
+    // interpreting (transcription alone needs none). Each line on it is spoken in its speaker's chosen voice.
     const needed = this.interpreting && distinct.size > 1 ? distinct : new Set<string>();
-    for (const lang of needed) {
-      if (this.voices.has(lang)) continue;
-      const voice = new LanguageVoice(lang);
-      this.voices.set(lang, voice);
-      const track = LocalAudioTrack.createAudioTrack(interpreterTrackName(lang), voice.source);
+    for (const key of needed) {
+      if (this.voices.has(key)) continue;
+      const voice = new LanguageVoice(key);
+      this.voices.set(key, voice);
+      const track = LocalAudioTrack.createAudioTrack(interpreterTrackName(key), voice.source);
       voice.publication = await this.room.localParticipant!.publishTrack(track, new TrackPublishOptions({ source: TrackSource.SOURCE_MICROPHONE, dtx: false, red: false }));
     }
-    for (const [lang, voice] of this.voices) {
-      if (needed.has(lang)) continue;
+    for (const [key, voice] of this.voices) {
+      if (needed.has(key)) continue;
       if (voice.publication?.sid) await this.room.localParticipant!.unpublishTrack(voice.publication.sid).catch(() => {});
       voice.close();
-      this.voices.delete(lang);
+      this.voices.delete(key);
     }
 
     // Tell clients who speaks what (for muting other-language voices) and which voices exist. Sent on every
@@ -595,7 +610,7 @@ export class MeetingInterpreter {
     if (stale) console.warn(`[interpreter] ${identity}: recognised ${Math.round((u.resultAt - u.speechEndAt) / 1000)} s late (${Math.round((u.speechEndAt - u.speechStartAt) / 1000)} s of speech): transcript only, not voiced`);
     const targets = stale ? [] : this.targetsFor(identity);
     const out: InterpreterOutput = {
-      speak: async (language, text) => this.voices.get(language)?.speak(text) ?? null,
+      speak: (language, text) => this.speakIn(language, text, person.voice),
       send: (msg) => this.send(msg),
     };
     try {

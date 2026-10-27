@@ -316,6 +316,7 @@ model MeetingParticipant {
   updatedAt              DateTime        @updatedAt
 
   callLanguage String? // language this person speaks and wants to hear during interpretation
+  callVoice    String? // Magpie voice (and tone) this person hears translations in, e.g. "Sofia.Calm"; null = the default voice
   meeting      Meeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
   user         User    @relation("ParticipantUser", fields: [userId], references: [id], onDelete: Cascade)
 

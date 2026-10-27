@@ -10,6 +10,8 @@ import { getCallingProvider } from "../providers/calling";
 import { INTERPRETER_IDENTITY, interpreterLanguageCodes } from "../interpreter/constants";
 import { INDIC_NAMES, readIndicConfig } from "../providers/indic";
 import { getTranscriptMeeting, pushRoomState } from "./transcripts";
+import { allVoices, defaultMagpieVoice, listMagpieVoices, magpieHasVoice, magpieSample, readMagpieConfig } from "../providers/magpie";
+import { rateLimit } from "../rate-limit";
 
 type Ctx = Pick<AuthContext, "userId" | "organizationId" | "orgRole"> & { user: { displayName: string } };
 
@@ -38,11 +40,17 @@ export async function getInterpretationState(ctx: Ctx, ref: string) {
   const fresh = await db.meeting.findUniqueOrThrow({ where: { id: meeting.id }, select: { interpretationEnabled: true, transcriptionEnabled: true } });
   const user = await db.user.findUniqueOrThrow({ where: { id: ctx.userId }, select: { preferredLanguage: true } });
   const pref = me?.callLanguage ?? user.preferredLanguage;
+  const myLanguage = interpreterLanguageCodes().includes(pref) ? pref : "en";
+  const voices = readMagpieConfig() ? allVoices(await listMagpieVoices(), myLanguage) : [];
   return {
     enabled: fresh.interpretationEnabled,
     canManage: isModerator(myRole),
     available: !!readRivaConfig(),
-    myLanguage: interpreterLanguageCodes().includes(pref) ? pref : "en",
+    myLanguage,
+    /** Voices (and tones) I can choose for how others hear me (my language's first), and the default. */
+    voices,
+    defaultVoice: voices.length ? defaultMagpieVoice(myLanguage) : null,
+    myVoiceId: me?.callVoice && voices.some((v) => v.id === me.callVoice) ? me.callVoice : null,
     /** Has this person picked a language in this call, and is their voice being interpreted? */
     chosen: !!me?.callLanguage,
     myVoice: !!me?.transcriptionConsentAt,
@@ -98,6 +106,53 @@ export async function setMyCallLanguage(ctx: Ctx, ref: string, raw: unknown) {
   if (switchedOn) await pushRoomState(meeting);
   await audit({ action: "interpretation.language", actorUserId: ctx.userId, organizationId: ctx.organizationId, targetType: "Meeting", targetId: meeting.id, metadata: { language, switchedOn } });
   return getInterpretationState(ctx, ref);
+}
+
+/**
+ * My voice: how everyone hears my translated speech (null = each language's default voice). Listeners hear
+ * this voice and tone where their language has it, else the same voice without the tone, else their default.
+ */
+export async function setMyCallVoice(ctx: Ctx, ref: string, raw: unknown) {
+  const { voice } = z.object({ voice: z.string().max(50).nullable() }).parse(raw);
+  const { meeting, me } = await getTranscriptMeeting(ctx, ref);
+  if (!me) throw new AppError("FORBIDDEN", "Join the meeting first.");
+  if (voice && !(await magpieHasVoice(voice))) throw new AppError("VALIDATION", "That voice isn't available.");
+  await db.meetingParticipant.update({ where: { id: me.id }, data: { callVoice: voice } });
+  await audit({ action: "interpretation.voice", actorUserId: ctx.userId, organizationId: ctx.organizationId, targetType: "Meeting", targetId: meeting.id, metadata: { voice } });
+  return getInterpretationState(ctx, ref);
+}
+
+const SAMPLE: Record<string, string> = {
+  en: "Hello! This is how the interpreter will sound to you.",
+  hi: "नमस्ते! दुभाषिया आपको ऐसे सुनाई देगा।",
+  es: "¡Hola! Así es como sonará el intérprete.",
+  fr: "Bonjour ! Voici comment l'interprète sonnera pour vous.",
+  de: "Hallo! So wird der Dolmetscher für Sie klingen.",
+  it: "Ciao! Ecco come suonerà l'interprete per te.",
+  pt: "Olá! É assim que o intérprete vai soar para você.",
+  zh: "你好！这就是口译员听起来的声音。",
+  ja: "こんにちは！通訳はこのように聞こえます。",
+  ko: "안녕하세요! 통역사의 목소리는 이렇게 들립니다.",
+  ar: "مرحبًا! هكذا سيبدو صوت المترجم.",
+  vi: "Xin chào! Đây là giọng của phiên dịch viên.",
+};
+
+/** A short sample of a voice (WAV): in my language if it has this exact voice and tone, else in one that does. */
+export async function previewCallVoice(ctx: Ctx, ref: string, raw: unknown) {
+  const { voice } = z.object({ voice: z.string().max(50).nullable() }).parse(raw);
+  const { me } = await getTranscriptMeeting(ctx, ref);
+  if (!me) throw new AppError("FORBIDDEN", "Join the meeting first.");
+  rateLimit(`voice-preview:${ctx.userId}`, 20, 60_000);
+  const user = await db.user.findUniqueOrThrow({ where: { id: ctx.userId }, select: { preferredLanguage: true } });
+  const pref = me.callLanguage ?? user.preferredLanguage;
+  const mine = interpreterLanguageCodes().includes(pref) ? pref : "en";
+  const byLang = await listMagpieVoices();
+  const has = (lang: string) => !voice || !!byLang.get(lang)?.some((v) => v.id === voice);
+  const language = [mine, "en", ...byLang.keys()].find(has);
+  if (!language) throw new AppError("VALIDATION", "That voice isn't available.");
+  const wav = await magpieSample(SAMPLE[language] ?? SAMPLE.en, language, voice).catch(() => null);
+  if (!wav) throw new AppError("PROVIDER_UNAVAILABLE", "The voice server didn't answer. Try again.");
+  return wav;
 }
 
 /** Stop using my voice for interpretation (and transcription). I keep hearing others in my language. */

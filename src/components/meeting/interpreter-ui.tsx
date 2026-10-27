@@ -1,11 +1,13 @@
 "use client";
 
-import { Check, Languages, Loader2, Timer } from "lucide-react";
+import { useState } from "react";
+import { AudioLines, Check, ChevronRight, Languages, Loader2, Timer } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { useInterpreter } from "./use-interpreter";
+import { VoicePicker, voiceLabel } from "./voice-picker";
 
 type Interp = ReturnType<typeof useInterpreter>;
 const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
@@ -13,10 +15,12 @@ const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 /** Footer control: turn the AI interpreter on (hosts), choose your language and how loud original voices stay. */
 export function InterpreterControl({ interp }: { interp: Interp }) {
   const { state, enabled, myLanguage } = interp;
+  const [picking, setPicking] = useState(false);
   if (!state?.available) return null;
   const name = state.languages.find((l) => l.code === myLanguage)?.name ?? myLanguage;
   const run = (p: Promise<unknown>) => p.catch((err) => toast.error(err instanceof Error ? err.message : "Couldn't change the interpreter"));
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -55,6 +59,19 @@ export function InterpreterControl({ interp }: { interp: Interp }) {
             <span className="flex-1 text-xs">Turn off for everyone (host)</span>
           </DropdownMenuItem>
         )}
+        {!!state.voices?.length && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => setPicking(true)}>
+              <AudioLines aria-hidden />
+              <span className="flex-1">
+                Your voice (how others hear you)
+                <span className="block text-xs text-muted-foreground">{voiceLabel(state.myVoiceId ?? state.defaultVoice)}{!state.myVoiceId && " (default)"}</span>
+              </span>
+              <ChevronRight aria-hidden />
+            </DropdownMenuItem>
+          </>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Others&apos; original voices (when translated for you)</DropdownMenuLabel>
         {[{ v: 0, label: "Muted: hear only the translation" }, { v: 0.15, label: "Quiet underneath the translation" }, { v: 1, label: "Full volume" }].map((o) => (
@@ -70,6 +87,8 @@ export function InterpreterControl({ interp }: { interp: Interp }) {
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+    <VoicePicker interp={interp} open={picking} onOpenChange={setPicking} />
+    </>
   );
 }
 

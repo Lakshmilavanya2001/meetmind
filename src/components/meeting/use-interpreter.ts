@@ -12,7 +12,8 @@ const trackName = (lang: string) => `interpreter-${lang}`;
 
 const VOLUME_KEY = "meetmind.interpreter.originalVolume";
 
-export type InterpretationState = { enabled: boolean; canManage: boolean; available: boolean; myLanguage: string; chosen?: boolean; myVoice?: boolean; languages: { code: string; name: string; voice: boolean }[]; engines?: { indic: boolean } };
+export type VoiceOption = { id: string; speaker: string; tone: string | null };
+export type InterpretationState = { enabled: boolean; canManage: boolean; available: boolean; myLanguage: string; chosen?: boolean; myVoice?: boolean; languages: { code: string; name: string; voice: boolean }[]; engines?: { indic: boolean }; voices?: VoiceOption[]; defaultVoice?: string | null; myVoiceId?: string | null };
 export type Latency = { asrMs: number; mtMs: number; ttsMs: number; queueMs: number; totalMs: number; spoken: boolean };
 export type Line = { id: string; speakerId: string; speaker: string; language: string; text: string; at: number; translations: Record<string, string>; latency: Record<string, Latency> };
 
@@ -148,6 +149,20 @@ export function useInterpreter(meetingRef: string) {
     [meetingRef],
   );
 
+  const setVoice = useCallback(
+    async (voice: string | null) => setState(await api<InterpretationState>(`/api/meetings/${meetingRef}/interpretation/me/voice`, { method: "PUT", json: { voice } })),
+    [meetingRef],
+  );
+  /** A short sample of a voice, as audio to play. */
+  const previewVoice = useCallback(
+    async (voice: string | null) => {
+      const res = await fetch(`/api/meetings/${meetingRef}/interpretation/voice-preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+      if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: { message?: string } } | null)?.error?.message ?? "Couldn't play the sample");
+      return res.blob();
+    },
+    [meetingRef],
+  );
+
   const stopMyVoice = useCallback(async () => setState(await api<InterpretationState>(`/api/meetings/${meetingRef}/interpretation/me`, { method: "DELETE" })), [meetingRef]);
 
   // Average end-to-end latency of what this person heard.
@@ -156,5 +171,5 @@ export function useInterpreter(meetingRef: string) {
     return { count: totals.length, avgMs: totals.length ? Math.round(totals.reduce((a, b) => a + b, 0) / totals.length) : null };
   }, [lines, myLanguage]);
 
-  return { state, enabled, myLanguage, roster, lines, stats, agentPresent, originalVolume, setOriginalVolume, setEnabled, setLanguage, stopMyVoice };
+  return { state, enabled, myLanguage, roster, lines, stats, agentPresent, originalVolume, setOriginalVolume, setEnabled, setLanguage, setVoice, previewVoice, stopMyVoice };
 }
