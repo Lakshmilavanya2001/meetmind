@@ -106,7 +106,9 @@ scripts/meetmind-services.sh stop
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | optional | Real SMS for reminders and phone verification. Without them, SMS is off and reminders stay in-app |
 | `EMAIL_DEV_OUTBOX` | **development only** | `true` records emails (e.g. call summaries) in Settings → Messages instead of sending them |
 | `SMS_VERIFY_STARTS_PER_10MIN` | optional | Verification codes per user per 10 minutes (default 3) |
-| `INTERPRETER_PAUSE_MS` | optional | AI interpreter: the pause that ends a sentence (default 800 ms; lower is faster but may split sentences) |
+| `INTERPRETER_PAUSE_MS` | optional | AI interpreter: the pause that ends a sentence. Leave unset: phrase mode cuts at 250 ms breaths, sentence mode at 600 ms. Any value also replaces the 250 ms phrase pause |
+| `INTERPRETER_OFFLINE_ASR_LANGUAGES` | optional | AI interpreter: languages recognised offline, one request per utterance, instead of streaming to Riva (which needs 0.8–1.1 s after each pause). E.g. `en,hi`; empty: off |
+| `INTERPRETER_OFFLINE_ASR_URL` | optional | The offline server: a Riva ASR NIM in offline mode, e.g. Parakeet from `deploy/gpu-host` (`http://127.0.0.1:8001`, ~50 ms per utterance; every call language but Chinese and Vietnamese). Unset: the `STT_*` server (Granite, ~0.2 s, English only) |
 | `SMS_ALLOWED_PREFIXES`, `SMS_DAILY_LIMIT_PER_USER`, `SMS_DAILY_LIMIT` | optional | Countries that can be texted (default `+91`) and daily caps (defaults 20 per user, 2000 total) |
 | `SMS_DEV_OUTBOX` | **development only** | `true` records texts, including verification codes, in the app instead of sending them. Never set it in production |
 | `RIVA_API_KEY`, `TTS_API_KEY` | optional | Bearer tokens for the Riva and TTS endpoints, if they need one |
@@ -124,3 +126,23 @@ Features whose variables are missing are reported as "not configured" in the Int
 ## Local development
 
 See the README: `docker compose up -d`, `npm run dev`, and HTTPS at `https://<ip>:3443` via `scripts/dev-cert.sh`.
+
+## Offline Parakeet on the app host (`deploy/gpu-host`)
+
+The interpreter's offline recognition (`INTERPRETER_OFFLINE_ASR_URL`) can run on the app host's own NVIDIA GPU
+(an L40S here; ~12 GB of GPU memory, ~10 GB of disk). It serves NVIDIA's Parakeet 1.1B RNNT multilingual in Riva's
+offline mode, using the Whisper NIM image only as the Riva 25.12 runtime:
+
+```bash
+# once: the L40S offline build of the model (NGC API key in $NGC_API_KEY)
+mkdir -p ~/meetmind-models/nim-export/asr-parakeet ~/meetmind-models/nim-workspace/asr
+curl -L -H "Authorization: Bearer $NGC_API_KEY" -o ~/meetmind-models/nim-export/asr-parakeet/custom_model.tar.gz \
+  "https://api.ngc.nvidia.com/v2/org/nim/team/nvidia/models/parakeet-1-1b-rnnt-multilingual/versions/l40sx1-ofl-25.12.1-fp16-uws2gbmzww/files/asr-parakeet-rnnt-1.1b-unified-ml-cs-universal-multi-offline-nemo.tar.gz"
+cd deploy/gpu-host && echo "MODELS_DIR=$HOME/meetmind-models" > .env && docker compose --env-file .env up -d --build
+```
+
+It is healthy after ~1.5 min (it warms up English and Hindi first). Port 8001 is Riva's own HTTP server with 32
+workers (`HTTP_MAX_WORKERS`), not the NIM's HTTP front end, which handles one request at a time; that way concurrent
+requests reach the GPU together and are batched. Then set `INTERPRETER_OFFLINE_ASR_URL=http://127.0.0.1:8001`
+and `INTERPRETER_OFFLINE_ASR_LANGUAGES=en,hi` and restart the interpreter. Other GPUs need their own build of the model
+(NGC lists versions per GPU, e.g. `h100x1-ofl-…`).

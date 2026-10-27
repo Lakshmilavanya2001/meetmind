@@ -29,6 +29,8 @@ import { PHRASE_MAX_MS, PHRASE_PAUSE_MS, phraseMode, segmenterOptions, Utterance
 import { ASSISTANT_MAX_MS, ASSISTANT_STATE_TOPIC, INTERPRETER_IDENTITY, INTERPRETER_NAME, INTERPRETER_TOPIC, interpreterLanguageCodes, interpreterTrackName } from "./constants";
 import { indicAsrSupports, indicCovers, readIndicConfig } from "../providers/indic";
 import { IndicAsrStream } from "./indic-asr-stream";
+import { OfflineAsr, offlineAsrLanguages } from "./offline-asr";
+import { createOpenAiSttProvider, createRivaOfflineSttProvider, readSttConfig } from "../providers/stt";
 import { stripWakePhrase } from "../../lib/voice-commands";
 
 const ROSTER_REPEAT_MS = 5_000;
@@ -53,6 +55,17 @@ const UNKNOWN_STATE_MS = 8000;
 import { IndicTtsStream, TTS_RATE } from "./indic-tts-stream";
 export { INTERPRETER_IDENTITY };
 
+/**
+ * Offline recognition for the languages in INTERPRETER_OFFLINE_ASR_LANGUAGES; others stream to Riva. The server is
+ * INTERPRETER_OFFLINE_ASR_URL (Riva offline, e.g. Parakeet from deploy/gpu-host) or else the STT_* server (Granite).
+ */
+const sttConfig = readSttConfig();
+const offlineStt = process.env.INTERPRETER_OFFLINE_ASR_URL
+  ? createRivaOfflineSttProvider(process.env.INTERPRETER_OFFLINE_ASR_URL)
+  : sttConfig
+    ? createOpenAiSttProvider(sttConfig)
+    : null;
+const OFFLINE_ASR_LANGUAGES = offlineAsrLanguages(offlineStt);
 const OUT_RATE = 48_000; // matches TTS_RATE, so streamed Indic audio needs no resampling
 void TTS_RATE;
 const DEBUG = process.env.INTERPRETER_DEBUG === "1";
@@ -235,10 +248,12 @@ function readAhead(stream: ReadableStream<Uint8Array>): AsyncIterable<Int16Array
   };
 }
 
-/** Listens to one consenting speaker: voice detection → streaming recognition → interpretation. */
+/** Listens to one consenting speaker: voice detection → recognition (offline or streaming) → interpretation. */
 class SpeakerSession {
   private riva: RivaStream | null = null;
   private indic: IndicAsrStream | null = null;
+  /** Offline recognition: one request per finished utterance, cut by our own voice detector. */
+  private offline: OfflineAsr | null = null;
   // Starts with the longer "Hey Mind" pause until the caller's browser has said whether it's listening.
   private segmenter = new UtteranceSegmenter({ ...segmenterOptions(), endSilenceMs: Math.max(segmenterOptions().endSilenceMs, WAKE_PAUSE_MS) });
 
@@ -262,13 +277,15 @@ class SpeakerSession {
       // IndicConformer finds the end of each utterance itself (VAD) and answers ~85 ms after the pause.
       const pause = Number(process.env.INTERPRETER_PAUSE_MS) || 500;
       this.indic = new IndicAsrStream(base, language, Math.min(2000, Math.max(300, pause)), onUtterance, (m) => console.error(`[interpreter] indic asr (${userId}): ${m}`));
+    } else if (offlineStt && OFFLINE_ASR_LANGUAGES.has(language)) {
+      this.offline = new OfflineAsr(offlineStt, language, onUtterance, (m) => console.error(`[interpreter] offline asr (${userId}): ${m}`));
     } else {
       this.riva = new RivaStream(rivaConfig, language, onUtterance, (m) => console.error(`[interpreter] riva (${userId}): ${m}`));
     }
   }
 
   get engine() {
-    return this.indic ? "indic" : "riva";
+    return this.indic ? "indic" : this.offline ? "offline" : "riva";
   }
 
   async run() {
@@ -286,12 +303,13 @@ class SpeakerSession {
           this.indic.append(bytes);
           continue;
         }
-        this.riva!.append(bytes);
+        const asr = (this.offline ?? this.riva)!;
+        asr.append(bytes);
         const ev = this.segmenter.push(samples);
         if (ev?.type === "start") this.speechStartAt = Date.now();
         else if (ev?.type === "end") {
           if (DEBUG) console.log(`[interpreter] ${this.userId} end of speech: ${ev.speechMs} ms voiced, detected ${Date.now() - this.segmenter.lastVoiceAt} ms after last voice${ev.forced ? " (forced)" : ""}`);
-          this.riva!.commit(this.speechStartAt || Date.now(), this.segmenter.lastVoiceAt);
+          asr.commit(this.speechStartAt || Date.now(), this.segmenter.lastVoiceAt);
         }
       }
     } catch (err) {
@@ -303,6 +321,7 @@ class SpeakerSession {
     this.stopped = true;
     this.riva?.close();
     this.indic?.close();
+    this.offline?.close();
   }
 }
 

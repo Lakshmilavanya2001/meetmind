@@ -236,6 +236,72 @@ Translation used to start only when the speaker paused (a whole sentence). Now i
 - **Transcript:** lines are phrase-sized.
 - `INTERPRETER_MODE=sentence` turns it off (600 ms pause, whole sentences); `INTERPRETER_PAUSE_MS` overrides the phrase pause.
 
+## Offline recognition: Parakeet on this host (2026-10-26)
+
+The streaming Parakeet server returns a sentence's text only 0.8–1.1 s after the commit (measured from a client on
+another host, 2026-10-26): a cache-aware streaming model finishes a stream chunk by chunk, after 1 s of padding gives
+the last words their lookahead. Our voice detector already knows where each utterance ends, so for the languages in
+`INTERPRETER_OFFLINE_ASR_LANGUAGES` (`en,hi`) the interpreter sends the whole utterance in one request to an offline
+model instead (`src/server/interpreter/offline-asr.ts`): the last ~30 s of each speaker's audio is kept with its
+arrival time, an utterance is cut out from 300 ms before speech started to 200 ms after it ended, and requests run
+one at a time per speaker, so lines keep their order.
+
+- **The model:** the same Parakeet family, NVIDIA Parakeet 1.1B RNNT multilingual, in Riva's offline mode on this
+  host's GPU (`deploy/gpu-host`, `INTERPRETER_OFFLINE_ASR_URL`; DEPLOYMENT.md). It processes a whole utterance in one
+  pass: **~50 ms** for a sentence, 60–140 ms for 6–16 s of audio.
+- **Accuracy** (10 Hindi and 8 English meeting sentences voiced by Magpie, against the streaming server): every
+  sentence right in both. Offline writes numbers as words ("दस बजे") and sometimes lowercases names ("friday");
+  streaming once dropped "Priya". The model detects the language itself (the code is only a hint): one casual
+  Hindi clip ("हाँ, शुक्रवार…") came back with its first word in Cyrillic.
+- **Without the GPU host:** with `INTERPRETER_OFFLINE_ASR_URL` unset, the offline path uses the `STT_*` server
+  (Granite): ~0.2 s, English only, lowercase without punctuation.
+- Covered by `tests/unit/offline-asr.test.ts`.
+
+## The whole interpreter path under load (2026-10-26)
+
+`scripts/bench-interpreter.ts` runs the interpreter's path for an utterance with the app's own code and settings:
+offline Parakeet (`INTERPRETER_OFFLINE_ASR_URL`) → Qwen 27B with the interpreter prompt, streamed until the first
+spoken piece (`splitSpokenPieces`) → Magpie until the first audio (then the rest of it, as a call plays it). N
+simulated speakers run 2–6 s meeting sentences back to back. Times are p50 / p95 in ms from the end of the pause;
+the phrase pause (0.25 s) and WebRTC delivery (~0.1–0.2 s) come on top.
+
+```bash
+npx tsx --conditions=react-server scripts/bench-interpreter.ts en hi 1,2,4,6,8,12,16
+```
+
+**English → Hindi**
+
+| Speakers at once | Recognition | Translation | Voice | Total | Speaker stops → audio (p50) |
+|---|---|---|---|---|---|
+| 1 | 56 / 65 | 427 / 477 | 45 / 270 | 529 / 792 | 0.78 s |
+| 2 | 55 / 110 | 461 / 499 | 59 / 292 | 563 / 872 | 0.81 s |
+| 4 | 69 / 126 | 470 / 589 | 72 / 415 | 614 / 1024 | 0.86 s |
+| 6 | 84 / 141 | 477 / 574 | 83 / 290 | 675 / 886 | 0.93 s |
+| 8 | 97 / 153 | 478 / 641 | 110 / 315 | 735 / 920 | 0.99 s |
+| 12 | 96 / 190 | 543 / 693 | 130 / 408 | 820 / 1135 | 1.07 s |
+| 16 | 123 / 198 | 587 / 840 | 163 / 424 | 901 / 1271 | 1.15 s |
+
+**Hindi → English**
+
+| Speakers at once | Recognition | Translation | Voice | Total | Speaker stops → audio (p50) |
+|---|---|---|---|---|---|
+| 1 | 59 / 68 | 299 / 443 | 39 / 147 | 392 / 546 | 0.64 s |
+| 2 | 58 / 113 | 322 / 486 | 43 / 149 | 439 / 658 | 0.69 s |
+| 4 | 79 / 129 | 333 / 485 | 71 / 191 | 500 / 645 | 0.75 s |
+| 6 | 97 / 159 | 338 / 465 | 91 / 208 | 567 / 651 | 0.82 s |
+| 8 | 106 / 238 | 361 / 515 | 94 / 219 | 596 / 725 | 0.85 s |
+| 12 | 140 / 287 | 370 / 550 | 136 / 340 | 687 / 932 | 0.94 s |
+| 16 | 132 / 298 | 428 / 632 | 191 / 393 | 793 / 1027 | 1.04 s |
+
+- **Translation is 60–80% of the time** at every load, and English → Hindi is the slower direction (more output
+  tokens): ~430 ms against ~300 ms with one speaker, +130–160 ms at 16.
+- **Magpie's first audio grows the most under load:** ~40 ms alone, ~160–190 ms at 16 speakers; one Hindi phrase in
+  twenty starts after ~270 ms even alone.
+- **Recognition stays small:** 55–135 ms.
+- Up to 8 speakers at once the listener hears the translation within ~1 s (p50) of the speaker stopping; the single
+  speaker figure matches the browser test (0.72 s). The LLM and Magpie are shared servers, so their load at the time
+  is in these numbers.
+
 ## Interpreter latency, round 2 (2026-10-25, after the colleague's playbook)
 
 Same 8-sentence test (English monologue → Hindi listener), two runs each:
