@@ -136,6 +136,7 @@ enum IntegrationProvider {
   GOOGLE_CALENDAR
   OUTLOOK_CALENDAR
   SMTP
+  UBER
 }
 
 enum IntegrationStatus {

@@ -11,6 +11,8 @@ import { sandboxCommerce } from "../providers/commerce/sandbox";
 import { CINEMA_TZ, categoryOf, CATEGORIES, isSeat, parseShowId, priceSeats, ROWS, SEATS_PER_ROW, suggestSeats, takenSeats } from "../providers/commerce/movies";
 
 import type { CabOption, CommerceProvider, FoodQuote } from "../providers/commerce/types";
+import { RIDE_LABEL } from "../providers/uber";
+import { cancelUberRide, isUberBooking } from "./uber";
 
 type Ctx = Pick<AuthContext, "userId" | "organizationId" | "orgRole"> & { user: { timezone: string } };
 
@@ -168,9 +170,13 @@ async function reserveTableLocked(ctx: Ctx, raw: unknown, meetingId: string | nu
 // ─── Listing and cancelling ──────────────────────────────────────────────
 type BookingRow = { id: string; kind: string; title: string; reference: string; status: string; provider: string; totalPaise: number | null; scheduledFor: Date | null; createdAt: Date; details: Prisma.JsonValue };
 function view(b: BookingRow, tz: string) {
+  const uber = isUberBooking(b);
+  const ride = uber ? (b.details as { rideStatus?: string; driver?: string | null; vehicle?: string | null; fare?: string }) : null;
   return {
-    id: b.id, kind: b.kind, title: b.title, reference: b.reference, status: b.status, provider: b.provider,
-    sandbox: b.provider === "sandbox", total: b.totalPaise !== null ? rupees(b.totalPaise) : null,
+    id: b.id, kind: b.kind, title: b.title, reference: uber ? b.reference.slice(0, 8) : b.reference, status: b.status, provider: b.provider,
+    sandbox: b.provider === "sandbox", uber, uberTest: b.provider === "uber-sandbox",
+    ride: ride ? { status: ride.rideStatus ?? "processing", label: RIDE_LABEL[ride.rideStatus ?? "processing"] ?? ride.rideStatus ?? "", driver: ride.driver ?? null, vehicle: ride.vehicle ?? null } : null,
+    total: b.totalPaise !== null ? rupees(b.totalPaise) : (ride?.fare ?? null),
     when: b.scheduledFor ? local(b.scheduledFor, tz) : null, scheduledFor: b.scheduledFor, createdAt: b.createdAt, details: b.details,
   };
 }
@@ -191,12 +197,14 @@ export async function assertCancellable(ctx: Ctx, id: string) {
   if (b.status !== "CONFIRMED") throw new AppError("VALIDATION", "That booking is already cancelled.");
   const now = Date.now();
   if (b.kind === "FOOD" && now - b.createdAt.getTime() > FOOD_CANCEL_WINDOW_MS) throw new AppError("VALIDATION", "Food orders can only be cancelled within 5 minutes of ordering.");
+  if (isUberBooking(b)) return b; // Uber decides (cancelUberRide checks the ride's stage)
   if (b.kind !== "FOOD" && b.scheduledFor && b.scheduledFor.getTime() < now) throw new AppError("VALIDATION", "That booking time has already passed.");
   return b;
 }
 
 export async function cancelBooking(ctx: Ctx, id: string) {
   const b = await assertCancellable(ctx, id);
+  if (isUberBooking(b)) await cancelUberRide(ctx, b);
   const r = await db.booking.updateMany({ where: { id: b.id, status: "CONFIRMED" }, data: { status: "CANCELED", canceledAt: new Date() } });
   if (!r.count) throw new AppError("VALIDATION", "That booking is already cancelled.");
   await audit({ action: "booking.cancel", actorUserId: ctx.userId, organizationId: ctx.organizationId, targetType: "Booking", targetId: b.id });

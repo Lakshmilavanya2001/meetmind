@@ -29,7 +29,7 @@ export default async function TasksPage() {
         phoneVerified={canTextUser(profile)}
         smsDefault={profile.smsReminders}
       />
-      {ctx.orgRole !== "GUEST" && <BookingsCard bookings={bookings.map((b) => ({ id: b.id, kind: b.kind, title: b.title, reference: b.reference, status: b.status, total: b.total, when: b.when, sandbox: b.sandbox, createdAt: b.createdAt.toISOString() }))} />}
+      {ctx.orgRole !== "GUEST" && <BookingsCard bookings={bookings.map((b) => ({ id: b.id, kind: b.kind, title: b.title, reference: b.reference, status: b.status, total: b.total, when: b.when, sandbox: b.sandbox, uber: b.uber, uberTest: b.uberTest, ride: b.ride, createdAt: b.createdAt.toISOString() }))} />}
     </div>
   );
 }

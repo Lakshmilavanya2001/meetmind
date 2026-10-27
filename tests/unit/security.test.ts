@@ -15,6 +15,7 @@ describe("every API route is authenticated unless explicitly public", () => {
     ["src/app/api/invite/[token]/route.ts", "256-bit invite token, rate limited"],
     ["src/app/api/invite/[token]/signup/route.ts", "256-bit invite token; email taken from the invite"],
     ["src/app/api/livekit/webhook/route.ts", "LiveKit-signed JWT with body hash"],
+    ["src/app/api/integrations/uber/callback/route.ts", "Uber redirects here: checks the session itself and a one-time state cookie bound to that user"],
   ]);
 
   it("wraps handlers with authed() or is on the public allowlist", () => {

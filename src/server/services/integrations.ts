@@ -6,6 +6,7 @@ import { requireOrgRole } from "../auth/permissions";
 import type { AuthContext } from "../auth/session";
 import { rateLimit } from "../rate-limit";
 import { getEmailProvider, readSmtpConfig } from "../providers/email";
+import { readUberConfig } from "../providers/uber";
 
 type Ctx = Pick<AuthContext, "userId" | "organizationId" | "orgRole">;
 export type CheckStatus = "ok" | "error" | "not_configured";
@@ -58,6 +59,11 @@ export async function getIntegrationStatus(ctx: Ctx): Promise<Check[]> {
         ? { id: "email", name: "Email (SMTP)", status: "error", detail: `The mail server rejected the credentials; sending is paused until ${paused.toISOString()}. Fix SMTP_USER/SMTP_PASSWORD.`, required: false }
         : { id: "email", name: "Email (SMTP)", status: "ok", detail: `Configured for ${smtp.user} via ${smtp.host}:${smtp.port} (login not tested automatically).`, required: false };
     }).then((f) => f()),
+    Promise.resolve<Check>(((): Check => {
+      const u = readUberConfig();
+      if (!u) return { id: "uber", name: "Uber rides", status: "not_configured", detail: "Optional. Not configured — cab bookings use the sandbox. Set UBER_CLIENT_ID and UBER_CLIENT_SECRET.", required: false };
+      return { id: "uber", name: "Uber rides", status: "ok", detail: `${u.env === "sandbox" ? "Test mode (no real cars)" : "PRODUCTION: real rides"}. Each user connects their own Uber account in their profile. Sign-in returns to ${u.redirectUri}.`, required: false };
+    })()),
     Promise.resolve<Check>({
       id: "teams",
       name: "Microsoft Teams connector",

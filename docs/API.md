@@ -165,9 +165,15 @@ All authenticated endpoints share the same rules: zod validation, the error shap
 | PUT | `/api/profile/sms-reminders` | any | `{ enabled }`. Text reminders by default (needs a verified number) |
 | GET | `/api/profile/sms` | any | Text messages sent to you; in development, the outbox |
 | GET | `/api/bookings` | members | Your food orders, cabs and table reservations |
-| POST | `/api/bookings/:id/cancel` | owner | Food within 5 minutes of ordering; cabs and tables before their time |
+| POST | `/api/bookings/:id/cancel` | owner | Food within 5 minutes of ordering; cabs and tables before their time; Uber rides before the trip starts (cancelled with Uber first) |
+| GET | `/api/bookings/:id/ride` | owner | Uber ride status refreshed from Uber: `{ status, label, driver, vehicle, etaMin, final }` |
+| POST | `/api/bookings/:id/ride/advance` | owner | Uber **test mode** only: move the ride to its next stage (processing → accepted → arriving → in_progress → completed) |
+| GET | `/api/integrations/uber` | any | `{ configured, env, connected, needsReconnect, connectedAt }` for your own Uber connection |
+| GET | `/api/integrations/uber/connect` | any | Redirects to Uber's sign-in, setting a one-time state cookie (10 minutes) |
+| GET | `/api/integrations/uber/callback` | session + state | Uber returns here. The state must match the cookie for the same signed-in user. Redirects to `/settings/profile?uber=connected\|denied\|expired\|error` |
+| POST | `/api/integrations/uber/disconnect` | any | Revokes the Uber token and deletes the connection |
 
-Orders and bookings are created only through the assistant (tools `order_food`, `book_cab`, `reserve_table`), always after confirmation.
+Orders and bookings are created only through the assistant (tools `order_food`, `book_cab`, `book_uber`, `reserve_table`), always after confirmation.
 
 `PATCH /api/profile` also accepts `preferredLanguage` (a language code) and `phoneNumber` (E.164; changing it clears verification).
 

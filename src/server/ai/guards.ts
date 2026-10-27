@@ -56,7 +56,7 @@ export function emailProvidedByUser(history: HistoryEntry[], email: string) {
 // Action verbs → tools that must have succeeded this turn for the claim to be true.
 const CLAIMS: { re: RegExp; tools: string[]; label: string }[] = [
   { re: /(invited|added|sent (?:the |an? )?(?:invit|link))/, tools: ["invite_participants", "invite_by_email", "create_meeting"], label: "invitation" },
-  { re: /(scheduled|booked|set up|created)/, tools: ["create_meeting", "start_instant_meeting", "book_cab", "reserve_table", "order_food", "create_reminder"], label: "creation or booking" },
+  { re: /(scheduled|booked|set up|created)/, tools: ["create_meeting", "start_instant_meeting", "book_cab", "book_uber", "reserve_table", "order_food", "create_reminder"], label: "creation or booking" },
   { re: /(rescheduled|moved)/, tools: ["reschedule_meeting"], label: "rescheduling" },
   { re: /(cancell?ed)/, tools: ["cancel_meeting", "cancel_booking", "cancel_reminder"], label: "cancellation" },
   { re: /(ordered|placed (?:the |an |your )?order)/, tools: ["order_food"], label: "food order" },

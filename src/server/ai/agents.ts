@@ -62,10 +62,10 @@ export const SPECIALISTS: Specialist[] = [
   {
     id: "travel",
     name: "Travel",
-    description: "Booking cabs or rides (auto, mini, sedan, SUV), fare estimates between places, and listing or cancelling cab bookings.",
+    description: "Booking cabs or rides (Uber, auto, mini, sedan, SUV), fare estimates between places, Uber ride status, and listing or cancelling cab bookings.",
     focus:
-      "You handle cabs through the sandbox provider. Ask for the pickup and drop-off if either is missing. Say that it's a sandbox: no real cab, no charge.",
-    tools: ["resolve_datetime", "get_cab_options", "book_cab", "list_bookings", "cancel_booking"],
+      "You book rides. Ask for the pickup and drop-off if either is missing. For fares, call get_uber_options first: if the user's Uber account is connected, offer those real Uber options and book with book_uber (pickup now only; for a later time use the sandbox's book_cab). If Uber isn't connected or fails, use get_cab_options and book_cab (sandbox: say no real cab comes and nothing is charged). Relay the note about Uber test mode or real rides exactly. For ride progress use get_ride_status; advance_test_ride only when the user asks to move a test ride along.",
+    tools: ["resolve_datetime", "get_uber_options", "book_uber", "get_ride_status", "advance_test_ride", "get_cab_options", "book_cab", "list_bookings", "cancel_booking"],
   },
   {
     id: "movies",

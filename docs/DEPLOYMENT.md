@@ -113,6 +113,10 @@ scripts/meetmind-services.sh stop
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM` | optional | Without them, invitations are delivered in-app only |
 | `TRANSCRIPTION_DAILY_MINUTES_PER_ORG` | optional | Default 1440 |
 | `UPLOAD_DIR`, `DISABLE_WORKERS` | optional | |
+| `UBER_CLIENT_ID`, `UBER_CLIENT_SECRET` | optional | Uber Riders API app from developer.uber.com, with scopes `ride_request.estimate` and `ride_request.ride_booking`. Each user connects their own Uber account in Settings → Profile. Without them, cabs use the sandbox |
+| `UBER_ENV` | optional | `sandbox` (default: Uber's test servers, no real car, nothing charged; fares are real) or `production` (real rides, charged; needs Uber's approval of the app) |
+| `UBER_REDIRECT_URI` | optional | Default `${APP_URL}/api/integrations/uber/callback`. Must be listed exactly in the Uber app's redirect URIs |
+| `GEOCODER_URL`, `GEOCODER_CONTACT`, `GEOCODER_COUNTRIES` | needed for Uber | Nominatim-compatible geocoder (place name → coordinates) for Uber bookings and the "Open in Uber" link. The public server allows 1 request a second |
 | `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET` | future | See TEAMS_CONNECTOR.md |
 
 Features whose variables are missing are reported as "not configured" in the Integrations panel and disabled in the UI. They never pretend to work.

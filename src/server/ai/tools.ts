@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { geocode, type GeoPoint } from "../providers/geocode";
 import { uberRideLink } from "@/lib/uber-link";
+import { advanceTestRide, bookUberRide, describeUberRide, getRideStatus, isUberConnected, quoteUberRide, uberOptions } from "../services/uber";
 import { AppError } from "../errors";
 import { requireMember } from "../auth/permissions";
 import type { AuthContext } from "../auth/session";
@@ -829,11 +830,12 @@ export const TOOLS: ToolDef[] = [
     schema: z.object({ pickup: z.string().min(3).max(200), drop: z.string().min(3).max(200) }),
     label: () => "Checking cab fares",
     run: async (ctx, a) => {
-      const [opts, uber] = await Promise.all([cabOptions(memberCtx(ctx), a.pickup, a.drop), uberLinkFor(a.pickup, a.drop)]);
+      const [opts, uber, connected] = await Promise.all([cabOptions(memberCtx(ctx), a.pickup, a.drop), uberLinkFor(a.pickup, a.drop), isUberConnected(memberCtx(ctx))]);
       return {
         data: {
           sandbox: getCommerce().sandbox,
           options: opts.map((o) => ({ type: o.type, label: o.label, seats: o.seats, fare: rupees(o.farePaise), pickupEtaMin: o.pickupEtaMinutes, tripMin: o.tripMinutes, distanceKm: o.distanceKm })),
+          ...(connected ? { uber_connected: "This user has connected Uber: call get_uber_options for real Uber fares and book with book_uber, unless they asked for a later pickup or for the sandbox." } : {}),
           real_ride: "An 'Open in Uber' button is shown under these results: it opens Uber with this pickup and drop-off for a real ride at Uber's own prices, confirmed and paid in Uber. Mention it once; you can't book or price Uber rides yourself.",
         },
         summary: `${opts.length} cab options`,
@@ -855,6 +857,58 @@ export const TOOLS: ToolDef[] = [
     run: async (ctx, a) => {
       const r = await bookCab(memberCtx(ctx), { pickup: a.pickup, drop: a.drop, type: a.cab_type, pickupAt: a.pickup_time });
       return { data: { reference: r.booking.reference, title: r.booking.title, fare: r.booking.total, pickup: r.booking.when, driver: r.driver, vehicle: r.vehicle, note: SANDBOX_NOTE }, summary: `${r.booking.title} · ${r.booking.total}`, link: "/tasks" };
+    },
+  }),
+  // ─── Uber (Riders API; test mode unless UBER_ENV=production) ─────────
+  def({
+    name: "get_uber_options",
+    kind: "read",
+    description: "Real Uber ride options, fares and pickup times between two places, if the user has connected their Uber account. If not connected, it says so: then use get_cab_options (sandbox) instead.",
+    schema: z.object({ pickup: z.string().min(3).max(200), drop: z.string().min(3).max(200) }),
+    label: () => "Checking Uber fares",
+    run: async (ctx, a) => {
+      if (!(await isUberConnected(memberCtx(ctx)))) {
+        return { data: { connected: false, message: "Uber isn't connected for this user. Use get_cab_options (sandbox) instead, and mention they can connect Uber in Settings → Profile." }, summary: "Uber not connected", link: "/settings/profile" };
+      }
+      const r = await uberOptions(memberCtx(ctx), a.pickup, a.drop);
+      return { data: { connected: true, ...r }, summary: `${r.options.length} Uber options` };
+    },
+  }),
+  def({
+    name: "book_uber",
+    kind: "sensitive",
+    description: "Book an Uber ride now (product_id from get_uber_options). Pickup is immediate; Uber rides can't be scheduled here. The user confirms the route and fare first.",
+    schema: z.object({ pickup: z.string().min(3).max(200), drop: z.string().min(3).max(200), product_id: z.string().min(1).max(100) }),
+    label: () => "Booking an Uber",
+    preflight: async (ctx, a) => {
+      await assertPlacesGiven(ctx, [{ label: "pickup point", value: a.pickup }, { label: "drop-off point", value: a.drop }]);
+      return describeUberRide(await quoteUberRide(memberCtx(ctx), { pickup: a.pickup, drop: a.drop, productId: a.product_id }));
+    },
+    run: async (ctx, a) => {
+      const r = await bookUberRide(memberCtx(ctx), { pickup: a.pickup, drop: a.drop, productId: a.product_id });
+      return { data: { booking_id: r.booking.id, title: r.booking.title, ride: r.ride, note: r.note }, summary: `${r.booking.title} · ${r.ride.label}`, link: "/tasks" };
+    },
+  }),
+  def({
+    name: "get_ride_status",
+    kind: "read",
+    description: "Live status of one of the user's Uber rides (booking id from book_uber or list_bookings): stage, driver, car, pickup time.",
+    schema: z.object({ booking_id: z.string().min(1) }),
+    label: () => "Checking your ride",
+    run: async (ctx, a) => {
+      const r = await getRideStatus(memberCtx(ctx), a.booking_id);
+      return { data: r, summary: `${r.title}: ${r.label}`, link: "/tasks" };
+    },
+  }),
+  def({
+    name: "advance_test_ride",
+    kind: "write",
+    description: "Uber TEST MODE only, for demos: move one of the user's test rides to its next stage (finding a driver → driver on the way → arriving → on the trip → completed). Only when the user asks.",
+    schema: z.object({ booking_id: z.string().min(1) }),
+    label: () => "Moving the test ride along",
+    run: async (ctx, a) => {
+      const r = await advanceTestRide(memberCtx(ctx), a.booking_id);
+      return { data: r, summary: `${r.title}: ${r.label}`, link: "/tasks" };
     },
   }),
   def({
@@ -886,23 +940,23 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "list_bookings",
     kind: "read",
-    description: "The user's recent food orders, cabs and table reservations.",
+    description: "The user's recent food orders, cabs, Uber rides and table reservations.",
     schema: z.object({}),
     label: () => "Checking your bookings",
     run: async (ctx) => {
       const rows = await listBookings(memberCtx(ctx));
-      return { data: { bookings: rows.map((b) => ({ id: b.id, kind: b.kind, title: b.title, reference: b.reference, status: b.status, total: b.total, when: b.when, sandbox: b.sandbox })) }, summary: `${rows.length} booking(s)`, link: "/tasks" };
+      return { data: { bookings: rows.map((b) => ({ id: b.id, kind: b.kind, title: b.title, reference: b.reference, status: b.status, total: b.total, when: b.when, sandbox: b.sandbox, ...(b.uber ? { uber: b.uberTest ? "test mode" : "real", ride: b.ride?.label } : {}) })) }, summary: `${rows.length} booking(s)`, link: "/tasks" };
     },
   }),
   def({
     name: "cancel_booking",
     kind: "sensitive",
-    description: "Cancel a food order (within 5 minutes), cab or table reservation (id from list_bookings). The user confirms first.",
+    description: "Cancel a food order (within 5 minutes), cab, Uber ride (before the trip starts) or table reservation (id from list_bookings). The user confirms first.",
     schema: z.object({ booking_id: z.string().min(1) }),
     label: () => "Cancelling a booking",
     preflight: async (ctx, a) => {
       const b = await assertCancellable(memberCtx(ctx), a.booking_id);
-      return `Cancel ${b.title} (ref ${b.reference}).${b.provider === "sandbox" ? " Sandbox booking." : ""}`;
+      return `Cancel ${b.title} (ref ${b.reference.slice(0, 12)}).${b.provider === "sandbox" ? " Sandbox booking." : b.provider === "uber-sandbox" ? " Uber test-mode ride." : b.provider === "uber" ? " Real Uber ride: Uber may charge a cancellation fee." : ""}`;
     },
     run: async (ctx, a) => {
       const r = await cancelBooking(memberCtx(ctx), a.booking_id);
